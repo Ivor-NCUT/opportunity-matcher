@@ -1,0 +1,36 @@
+[
+  {
+    "email": "candidate.ai.ops@example.com",
+    "name": "林一",
+    "city": "上海",
+    "level": "junior",
+    "work_type": "full-time",
+    "availability": "2周内",
+    "skills": ["ai operations", "customer success", "saas", "content operations"],
+    "evidence": [
+      "在 AI SaaS 团队负责客户 onboarding 和知识库搭建",
+      "做过海外客户成功、社群运营和产品反馈整理"
+    ],
+    "resume_text": "AI SaaS customer success operations content operations onboarding",
+    "source_email_id": "mail-local-001",
+    "source_subject": "投递｜AI 产品运营｜林一",
+    "resume_uri": "local://resumes/linyi.pdf"
+  },
+  {
+    "email": "candidate.growth@example.com",
+    "name": "周二",
+    "city": "北京",
+    "level": "mid",
+    "work_type": "full-time",
+    "availability": "随时",
+    "skills": ["growth", "sales", "ai agent", "crm"],
+    "evidence": [
+      "负责 B2B 增长获客和销售线索转化",
+      "用 Agent 自动化整理 CRM 线索"
+    ],
+    "resume_text": "B2B growth sales ai agent CRM",
+    "source_email_id": "mail-local-002",
+    "source_subject": "简历更新｜周二",
+    "resume_uri": "local://resumes/zhouer.pdf"
+  }
+]

@@ -1,0 +1,46 @@
+[
+  {
+    "company": "Openmart",
+    "title": "AI 客户运营",
+    "city": "上海/远程",
+    "level_min": "intern",
+    "level_max": "mid",
+    "work_type": "full-time",
+    "required_skills": ["ai operations", "customer success"],
+    "preferred_skills": ["saas", "content operations"],
+    "status": "open"
+  },
+  {
+    "company": "Openmart",
+    "title": "增长运营",
+    "city": "北京/远程",
+    "level_min": "junior",
+    "level_max": "senior",
+    "work_type": "full-time",
+    "required_skills": ["growth", "sales"],
+    "preferred_skills": ["crm", "ai agent"],
+    "status": "open"
+  },
+  {
+    "company": "AgentBase",
+    "title": "Agent 解决方案运营",
+    "city": "远程",
+    "level_min": "junior",
+    "level_max": "mid",
+    "work_type": "full-time",
+    "required_skills": ["ai agent", "customer success"],
+    "preferred_skills": ["saas", "crm"],
+    "status": "open"
+  },
+  {
+    "company": "ContentOS",
+    "title": "AI 内容运营",
+    "city": "上海",
+    "level_min": "intern",
+    "level_max": "junior",
+    "work_type": "full-time",
+    "required_skills": ["content operations"],
+    "preferred_skills": ["ai operations", "saas"],
+    "status": "open"
+  }
+]

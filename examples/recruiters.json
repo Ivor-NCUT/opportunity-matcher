@@ -1,0 +1,23 @@
+[
+  {
+    "name": "Openmart 招聘负责人",
+    "email": "recruiter.openmart@example.com",
+    "company": "Openmart",
+    "whitelisted": true,
+    "job_ids": []
+  },
+  {
+    "name": "AgentBase 招聘负责人",
+    "email": "recruiter.agentbase@example.com",
+    "company": "AgentBase",
+    "whitelisted": true,
+    "job_ids": []
+  },
+  {
+    "name": "ContentOS 招聘负责人",
+    "email": "recruiter.contentos@example.com",
+    "company": "ContentOS",
+    "whitelisted": false,
+    "job_ids": []
+  }
+]

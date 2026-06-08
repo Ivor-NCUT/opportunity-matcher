@@ -1,0 +1,12 @@
+[project]
+name = "opportunity-matcher"
+version = "0.1.0"
+description = "Local CLI for AI recruiting opportunity matching."
+requires-python = ">=3.10"
+dependencies = []
+
+[project.scripts]
+opportunity-matcher = "opportunity_matcher.cli:main"
+
+[tool.unittest]
+start-directory = "tests"
