@@ -252,6 +252,23 @@ def init_db(conn: sqlite3.Connection) -> None:
             updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
             UNIQUE(outreach_id)
         );
+
+        CREATE TABLE IF NOT EXISTS mail_ingestion_items (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            source_email_id TEXT NOT NULL,
+            source_subject TEXT NOT NULL DEFAULT '',
+            sender_email TEXT NOT NULL DEFAULT '',
+            classification TEXT NOT NULL DEFAULT '',
+            status TEXT NOT NULL DEFAULT '',
+            local_table TEXT NOT NULL DEFAULT '',
+            local_id INTEGER,
+            attachment_manifest_json TEXT NOT NULL DEFAULT '[]',
+            error_text TEXT NOT NULL DEFAULT '',
+            raw_json TEXT NOT NULL DEFAULT '{}',
+            processed_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE(source_email_id, classification)
+        );
         """
     )
     ensure_columns(conn)
@@ -300,6 +317,19 @@ def ensure_columns(conn: sqlite3.Connection) -> None:
         },
         "followups": {
             "error_text": "TEXT NOT NULL DEFAULT ''",
+        },
+        "mail_ingestion_items": {
+            "source_subject": "TEXT NOT NULL DEFAULT ''",
+            "sender_email": "TEXT NOT NULL DEFAULT ''",
+            "classification": "TEXT NOT NULL DEFAULT ''",
+            "status": "TEXT NOT NULL DEFAULT ''",
+            "local_table": "TEXT NOT NULL DEFAULT ''",
+            "local_id": "INTEGER",
+            "attachment_manifest_json": "TEXT NOT NULL DEFAULT '[]'",
+            "error_text": "TEXT NOT NULL DEFAULT ''",
+            "raw_json": "TEXT NOT NULL DEFAULT '{}'",
+            "processed_at": "TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP",
+            "updated_at": "TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP",
         },
     }
     for table, columns in migrations.items():
@@ -866,3 +896,47 @@ def log_event(
         """,
         (event, candidate_id, job_id, recruiter_id, source_email_id, explanation),
     )
+
+
+def upsert_mail_ingestion_item(conn: sqlite3.Connection, item: dict[str, Any]) -> int:
+    fields = {
+        "source_email_id": item["source_email_id"],
+        "source_subject": item.get("source_subject", ""),
+        "sender_email": item.get("sender_email", "").strip().lower(),
+        "classification": item.get("classification", ""),
+        "status": item.get("status", ""),
+        "local_table": item.get("local_table", ""),
+        "local_id": item.get("local_id"),
+        "attachment_manifest_json": json.dumps(item.get("attachments", []), ensure_ascii=False),
+        "error_text": item.get("error_text", ""),
+        "raw_json": json.dumps(item.get("raw", {}), ensure_ascii=False),
+    }
+    cur = conn.execute(
+        """
+        INSERT INTO mail_ingestion_items (
+            source_email_id, source_subject, sender_email, classification,
+            status, local_table, local_id, attachment_manifest_json,
+            error_text, raw_json
+        ) VALUES (
+            :source_email_id, :source_subject, :sender_email, :classification,
+            :status, :local_table, :local_id, :attachment_manifest_json,
+            :error_text, :raw_json
+        )
+        ON CONFLICT(source_email_id, classification) DO UPDATE SET
+            source_subject = excluded.source_subject,
+            sender_email = excluded.sender_email,
+            status = excluded.status,
+            local_table = excluded.local_table,
+            local_id = excluded.local_id,
+            attachment_manifest_json = excluded.attachment_manifest_json,
+            error_text = excluded.error_text,
+            raw_json = excluded.raw_json,
+            processed_at = CURRENT_TIMESTAMP,
+            updated_at = CURRENT_TIMESTAMP
+        RETURNING id
+        """,
+        fields,
+    )
+    item_id = int(cur.fetchone()["id"])
+    conn.commit()
+    return item_id

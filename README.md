@@ -20,6 +20,7 @@ PYTHONPATH=src python3 -m opportunity_matcher.cli outbox
 招聘方合作流程：
 
 ```bash
+PYTHONPATH=src python3 -m opportunity_matcher.cli sync-mail-inbox
 PYTHONPATH=src python3 -m opportunity_matcher.cli sync-recruiting-mails
 PYTHONPATH=src python3 -m opportunity_matcher.cli draft-candidate-outreach --request-id 1
 PYTHONPATH=src python3 -m opportunity_matcher.cli review-interest
@@ -43,6 +44,7 @@ PYTHONPATH=src python3 -m opportunity_matcher.cli send-due-followups
 - `match --candidate-id <id>`：只查看某个候选人的匹配结果，不生成 outbox。
 - `run`：处理所有待处理候选人，生成候选人回信草稿和白名单招聘方推送草稿。
 - `sync-recruiting-mails`：从飞书邮箱同步标题为 `招聘合作｜姓名｜公司` 的招聘需求。
+- `sync-mail-inbox`：每日读取飞书邮箱招聘相关新邮件，分类入库客户、职位和候选人，下载候选人附件并抽取全文。
 - `draft-candidate-outreach`：为招聘需求匹配候选人并创建飞书邮箱触达草稿。
 - `review-interest`：查看或记录候选人回复，进入人工兴趣判断队列。
 - `mark-interested`：确认候选人感兴趣，创建招聘方简历转发草稿并安排 4 天跟进。
@@ -62,8 +64,9 @@ PYTHONPATH=src python3 -m opportunity_matcher.cli send-due-followups
 - 候选人触达：招聘需求、候选人、飞书草稿 ID、兴趣状态、转发草稿 ID。
 - 跟进提醒：候选人感兴趣后 4 天到期的面试进展和内推费结算提醒。
 - 审计日志：来源邮件、候选人、岗位、招聘方、事件、解释、创建时间。
+- 邮箱入库记录：每封邮件的分类、处理状态、附件清单、失败原因和本地记录映射。
 - 外部来源记录：记录飞书 Base 表名、record id、本地表和本地 id，方便追溯和重复导入。
 
 ## 后续部署方向
 
-本地 CLI 稳定后，可以把 `run` 放进定时任务或队列 worker；把 outbox 从本地草稿替换成真实邮箱发送器；再把 CLI 契约暴露给你、客户和候选人的 Agent 调用。
+本地 CLI 稳定后，可以把 `sync-mail-inbox` 放进定时任务或队列 worker；把 outbox 从本地草稿替换成真实邮箱发送器；再把 CLI 契约暴露给你、客户和候选人的 Agent 调用。
