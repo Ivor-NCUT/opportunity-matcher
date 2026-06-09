@@ -271,6 +271,34 @@ PYTHONPATH=src python3 -m opportunity_matcher.cli sync-recruiting-mails
 - 同一 `source_email_id` 重复同步会更新旧记录，不重复创建请求。
 - 命令依赖本机 `lark-cli` 邮箱授权。
 
+### `sync-mail-inbox [--mailbox <mailbox>] [--max <n>] [--candidate-query <text>] [--attachment-dir <dir>] [--json]`
+
+每日飞书邮箱入库入口。它只读邮箱，不发送、不删除、不移动邮件；目标库是本地 SQLite。
+
+```bash
+PYTHONPATH=src python3 -m opportunity_matcher.cli sync-mail-inbox
+PYTHONPATH=src python3 -m opportunity_matcher.cli sync-mail-inbox --json
+```
+
+处理规则：
+
+- 先复用 `sync-recruiting-mails` 搜索 `招聘合作`，导入客户、招聘方、职位和招聘请求。
+- 再用候选人关键词搜索邮箱，默认关键词是 `简历`、`resume`、`投递`、`求职`、`CV`、`应聘`、`候选人`、`作品集`。
+- 候选人按来源邮件、邮箱、姓名和附件记录去重；同一邮件不会重复下载和重复入库。
+- 默认下载候选人附件到 `data/mail_attachments/<message_id>/`，并尽量抽取全文写入候选人的 `resume_text`。
+- 无法识别候选人邮箱或姓名的邮件写入 `mail_ingestion_items`，状态为 `needs_review`。
+- 执行末尾默认调用 `run`，处理新入库的 `pending` / `pending_update` 候选人，只生成本地 outbox 草稿。
+
+可选参数：
+
+| 参数 | 说明 |
+| --- | --- |
+| `--candidate-query <text>` | 指定候选人搜索词，可重复传入；传入后不使用默认关键词。 |
+| `--no-download-attachments` | 只入库附件元数据，不下载文件。 |
+| `--no-extract-text` | 下载附件但不抽取全文。 |
+| `--no-run` | 入库后不处理 pending 候选人。 |
+| `--json` | 输出定时任务可消费的机器可读摘要。 |
+
 ### `draft-candidate-outreach --request-id <id> [--limit <n>] [--mailbox <mailbox>]`
 
 为某个招聘合作请求匹配候选人，并在飞书邮箱创建发给候选人的真实草稿。命令不会发送邮件。
@@ -373,6 +401,15 @@ PYTHONPATH=src python3 -m opportunity_matcher.cli doctor
 | `pending` | 新候选人，等待处理 |
 | `pending_update` | 已存在候选人的简历更新，等待重新处理 |
 | `processed` | 已由 `run` 处理完成 |
+
+邮箱入库状态：
+
+| 状态 | 含义 |
+| --- | --- |
+| `imported` | 新邮件已创建本地记录 |
+| `updated` | 邮件对应的已有记录已更新 |
+| `duplicate` | 邮件已处理，本次跳过 |
+| `needs_review` | 邮件信息不足，需要人工复核 |
 
 招聘合作请求状态：
 

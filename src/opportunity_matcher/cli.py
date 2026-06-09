@@ -23,6 +23,7 @@ from typing import Any
 
 from .db import DEFAULT_DB, connect, fetch_all, init_db, upsert_candidate, upsert_client, upsert_company, upsert_job, upsert_recruiter
 from .lark_importer import import_lark_dir
+from .mail_ingestion import CANDIDATE_QUERIES, sync_mail_inbox
 from .matcher import match_candidate
 from .recruiting_workflow import WEBHOOK_ENV, draft_candidate_outreach, mark_interested_and_draft_forward, review_interest, send_due_followups, sync_recruiting_mails
 from .workflow import process_pending
@@ -84,6 +85,17 @@ def build_parser() -> argparse.ArgumentParser:
     command.add_argument("--max", type=int, default=100)
     command.add_argument("--mailbox", default="me")
     command.set_defaults(func=cmd_sync_recruiting_mails)
+
+    command = subparsers.add_parser("sync-mail-inbox", help="Daily Lark Mail ingestion for recruiting clients, jobs, and candidates.")
+    command.add_argument("--mailbox", default="me")
+    command.add_argument("--max", type=int, default=100)
+    command.add_argument("--candidate-query", action="append", dest="candidate_queries", help="Candidate search query. Can be repeated.")
+    command.add_argument("--attachment-dir", default="data/mail_attachments")
+    command.add_argument("--no-download-attachments", action="store_true")
+    command.add_argument("--no-extract-text", action="store_true")
+    command.add_argument("--no-run", action="store_true", help="Do not process pending candidates after ingestion.")
+    command.add_argument("--json", action="store_true")
+    command.set_defaults(func=cmd_sync_mail_inbox)
 
     command = subparsers.add_parser("draft-candidate-outreach", help="Create Lark Mail drafts for candidates matched to one recruiting request.")
     command.add_argument("--request-id", type=int, required=True)
@@ -218,6 +230,44 @@ def cmd_sync_recruiting_mails(conn: sqlite3.Connection, args: argparse.Namespace
     return 0
 
 
+def cmd_sync_mail_inbox(conn: sqlite3.Connection, args: argparse.Namespace) -> int:
+    result = sync_mail_inbox(
+        conn,
+        mailbox=args.mailbox,
+        max_messages=args.max,
+        candidate_queries=args.candidate_queries or CANDIDATE_QUERIES,
+        attachment_dir=args.attachment_dir,
+        download_attachments=not args.no_download_attachments,
+        extract_text=not args.no_extract_text,
+        run_pending=not args.no_run,
+    )
+    if args.json:
+        print(json.dumps(result, ensure_ascii=False, indent=2))
+        return 0
+    print(f"招聘合作邮件扫描：{result['recruiting']['seen']}")
+    print(f"招聘合作已解析：{result['recruiting']['parsed']}")
+    print(f"招聘合作待复核：{result['recruiting']['needs_review']}")
+    print(f"候选人邮件扫描：{result['candidates']['seen']}")
+    print(f"新增候选人：{result['candidates']['created']}")
+    print(f"更新候选人：{result['candidates']['updated']}")
+    print(f"重复跳过：{result['candidates']['duplicates']}")
+    print(f"附件下载：{result['candidates']['attachments_downloaded']}")
+    print(f"待复核候选人邮件：{len(result['candidates']['needs_review'])}")
+    print(f"已处理 pending 候选人：{result['processed_pending_candidates']}")
+    print(
+        "新增记录："
+        f"客户 {result['new_records']['clients']}，"
+        f"职位 {result['new_records']['jobs']}，"
+        f"招聘请求 {result['new_records']['recruiting_requests']}，"
+        f"候选人 {result['new_records']['candidates']}"
+    )
+    if result["candidates"]["attachment_errors"]:
+        print(f"附件下载失败：{len(result['candidates']['attachment_errors'])}")
+    if result["candidates"]["text_extraction_errors"]:
+        print(f"附件抽文失败：{len(result['candidates']['text_extraction_errors'])}")
+    return 0
+
+
 def cmd_draft_candidate_outreach(conn: sqlite3.Connection, args: argparse.Namespace) -> int:
     ids = draft_candidate_outreach(conn, args.request_id, limit=args.limit, mailbox=args.mailbox)
     print(f"已创建候选人触达草稿：{len(ids)}")
@@ -314,6 +364,7 @@ def cmd_doctor(conn: sqlite3.Connection, args: argparse.Namespace) -> int:
         "recruiting_requests": "招聘合作请求",
         "candidate_outreach": "候选人触达记录",
         "followups": "跟进提醒",
+        "mail_ingestion_items": "邮箱入库记录",
     }
     for table, label in tables.items():
         count = conn.execute(f"SELECT COUNT(*) AS count FROM {table}").fetchone()["count"]
