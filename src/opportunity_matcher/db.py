@@ -97,6 +97,8 @@ def init_db(conn: sqlite3.Connection) -> None:
             first_seen_at TEXT NOT NULL DEFAULT '',
             last_seen_at TEXT NOT NULL DEFAULT '',
             portfolio_json TEXT NOT NULL DEFAULT '[]',
+            referrer_name TEXT NOT NULL DEFAULT '',
+            referral_note TEXT NOT NULL DEFAULT '',
             source_record_id TEXT NOT NULL DEFAULT '',
             raw_json TEXT NOT NULL DEFAULT '{}',
             status TEXT NOT NULL DEFAULT 'pending',
@@ -196,6 +198,60 @@ def init_db(conn: sqlite3.Connection) -> None:
             imported_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
             UNIQUE(source, source_table, source_record_id, local_table)
         );
+
+        CREATE TABLE IF NOT EXISTS recruiting_requests (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            source_email_id TEXT NOT NULL,
+            source_subject TEXT NOT NULL DEFAULT '',
+            sender_email TEXT NOT NULL DEFAULT '',
+            recruiter_name TEXT NOT NULL DEFAULT '',
+            company TEXT NOT NULL DEFAULT '',
+            jd_text TEXT NOT NULL DEFAULT '',
+            preference_text TEXT NOT NULL DEFAULT '',
+            client_id INTEGER REFERENCES clients(id) ON DELETE SET NULL,
+            recruiter_id INTEGER REFERENCES recruiters(id) ON DELETE SET NULL,
+            job_id INTEGER REFERENCES jobs(id) ON DELETE SET NULL,
+            status TEXT NOT NULL DEFAULT 'parsed',
+            error_text TEXT NOT NULL DEFAULT '',
+            raw_json TEXT NOT NULL DEFAULT '{}',
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE(source_email_id)
+        );
+
+        CREATE TABLE IF NOT EXISTS candidate_outreach (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            request_id INTEGER NOT NULL REFERENCES recruiting_requests(id) ON DELETE CASCADE,
+            candidate_id INTEGER NOT NULL REFERENCES candidates(id) ON DELETE CASCADE,
+            job_id INTEGER REFERENCES jobs(id) ON DELETE SET NULL,
+            recruiter_id INTEGER REFERENCES recruiters(id) ON DELETE SET NULL,
+            candidate_draft_id TEXT NOT NULL DEFAULT '',
+            forward_draft_id TEXT NOT NULL DEFAULT '',
+            interest_status TEXT NOT NULL DEFAULT 'needs_manual_review',
+            status TEXT NOT NULL DEFAULT 'drafted',
+            source_reply_email_id TEXT NOT NULL DEFAULT '',
+            reply_text TEXT NOT NULL DEFAULT '',
+            error_text TEXT NOT NULL DEFAULT '',
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE(request_id, candidate_id)
+        );
+
+        CREATE TABLE IF NOT EXISTS followups (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            outreach_id INTEGER NOT NULL REFERENCES candidate_outreach(id) ON DELETE CASCADE,
+            candidate_id INTEGER REFERENCES candidates(id) ON DELETE SET NULL,
+            job_id INTEGER REFERENCES jobs(id) ON DELETE SET NULL,
+            recruiter_id INTEGER REFERENCES recruiters(id) ON DELETE SET NULL,
+            due_at TEXT NOT NULL,
+            message TEXT NOT NULL DEFAULT '',
+            status TEXT NOT NULL DEFAULT 'pending',
+            sent_at TEXT NOT NULL DEFAULT '',
+            error_text TEXT NOT NULL DEFAULT '',
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE(outreach_id)
+        );
         """
     )
     ensure_columns(conn)
@@ -211,6 +267,8 @@ def ensure_columns(conn: sqlite3.Connection) -> None:
             "first_seen_at": "TEXT NOT NULL DEFAULT ''",
             "last_seen_at": "TEXT NOT NULL DEFAULT ''",
             "portfolio_json": "TEXT NOT NULL DEFAULT '[]'",
+            "referrer_name": "TEXT NOT NULL DEFAULT ''",
+            "referral_note": "TEXT NOT NULL DEFAULT ''",
             "source_record_id": "TEXT NOT NULL DEFAULT ''",
             "raw_json": "TEXT NOT NULL DEFAULT '{}'",
         },
@@ -233,6 +291,15 @@ def ensure_columns(conn: sqlite3.Connection) -> None:
         },
         "recruiters": {
             "company_id": "INTEGER REFERENCES companies(id) ON DELETE SET NULL",
+        },
+        "recruiting_requests": {
+            "preference_text": "TEXT NOT NULL DEFAULT ''",
+        },
+        "candidate_outreach": {
+            "reply_text": "TEXT NOT NULL DEFAULT ''",
+        },
+        "followups": {
+            "error_text": "TEXT NOT NULL DEFAULT ''",
         },
     }
     for table, columns in migrations.items():
@@ -283,6 +350,8 @@ def upsert_candidate(conn: sqlite3.Connection, item: dict[str, Any]) -> int:
         "first_seen_at": item.get("first_seen_at", ""),
         "last_seen_at": item.get("last_seen_at", ""),
         "portfolio_json": dumps(item.get("portfolio", [])),
+        "referrer_name": item.get("referrer_name", ""),
+        "referral_note": item.get("referral_note", ""),
         "source_record_id": item.get("source_record_id", ""),
         "raw_json": json.dumps(item.get("raw", {}), ensure_ascii=False),
         "status": status,
@@ -300,6 +369,7 @@ def upsert_candidate(conn: sqlite3.Connection, item: dict[str, Any]) -> int:
                 phone_or_wechat = :phone_or_wechat, sender_name = :sender_name,
                 direction = :direction, first_seen_at = :first_seen_at,
                 last_seen_at = :last_seen_at, portfolio_json = :portfolio_json,
+                referrer_name = :referrer_name, referral_note = :referral_note,
                 source_record_id = :source_record_id, raw_json = :raw_json,
                 status = :status, updated_at = CURRENT_TIMESTAMP
             WHERE id = :id
@@ -315,14 +385,15 @@ def upsert_candidate(conn: sqlite3.Connection, item: dict[str, Any]) -> int:
                 email, name, city, level, work_type, availability, skills_json,
                 evidence_json, resume_text, source_email_id, source_subject,
                 resume_uri, phone_or_wechat, sender_name, direction,
-                first_seen_at, last_seen_at, portfolio_json, source_record_id,
-                raw_json, status
+                first_seen_at, last_seen_at, portfolio_json, referrer_name,
+                referral_note, source_record_id, raw_json, status
             ) VALUES (
                 :email, :name, :city, :level, :work_type, :availability,
                 :skills_json, :evidence_json, :resume_text, :source_email_id,
                 :source_subject, :resume_uri, :phone_or_wechat, :sender_name,
                 :direction, :first_seen_at, :last_seen_at, :portfolio_json,
-                :source_record_id, :raw_json, :status
+                :referrer_name, :referral_note, :source_record_id, :raw_json,
+                :status
             )
             """,
             fields,
@@ -602,6 +673,177 @@ def upsert_source_record(
     source_id = int(cur.fetchone()["id"])
     conn.commit()
     return source_id
+
+
+def upsert_recruiting_request(conn: sqlite3.Connection, item: dict[str, Any]) -> int:
+    fields = {
+        "source_email_id": item["source_email_id"],
+        "source_subject": item.get("source_subject", ""),
+        "sender_email": item.get("sender_email", "").strip().lower(),
+        "recruiter_name": item.get("recruiter_name", ""),
+        "company": item.get("company", ""),
+        "jd_text": item.get("jd_text", ""),
+        "preference_text": item.get("preference_text", ""),
+        "client_id": item.get("client_id"),
+        "recruiter_id": item.get("recruiter_id"),
+        "job_id": item.get("job_id"),
+        "status": item.get("status", "parsed"),
+        "error_text": item.get("error_text", ""),
+        "raw_json": json.dumps(item.get("raw", {}), ensure_ascii=False),
+    }
+    cur = conn.execute(
+        """
+        INSERT INTO recruiting_requests (
+            source_email_id, source_subject, sender_email, recruiter_name,
+            company, jd_text, preference_text, client_id, recruiter_id, job_id,
+            status, error_text, raw_json
+        ) VALUES (
+            :source_email_id, :source_subject, :sender_email, :recruiter_name,
+            :company, :jd_text, :preference_text, :client_id, :recruiter_id,
+            :job_id, :status, :error_text, :raw_json
+        )
+        ON CONFLICT(source_email_id) DO UPDATE SET
+            source_subject = excluded.source_subject,
+            sender_email = excluded.sender_email,
+            recruiter_name = excluded.recruiter_name,
+            company = excluded.company,
+            jd_text = excluded.jd_text,
+            preference_text = excluded.preference_text,
+            client_id = excluded.client_id,
+            recruiter_id = excluded.recruiter_id,
+            job_id = excluded.job_id,
+            status = excluded.status,
+            error_text = excluded.error_text,
+            raw_json = excluded.raw_json,
+            updated_at = CURRENT_TIMESTAMP
+        RETURNING id
+        """,
+        fields,
+    )
+    request_id = int(cur.fetchone()["id"])
+    conn.commit()
+    return request_id
+
+
+def create_candidate_outreach_record(
+    conn: sqlite3.Connection,
+    request_id: int,
+    candidate_id: int,
+    job_id: int | None,
+    recruiter_id: int | None,
+    candidate_draft_id: str,
+    status: str = "drafted",
+    error_text: str = "",
+) -> int:
+    cur = conn.execute(
+        """
+        INSERT INTO candidate_outreach (
+            request_id, candidate_id, job_id, recruiter_id, candidate_draft_id,
+            status, error_text
+        ) VALUES (?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(request_id, candidate_id) DO UPDATE SET
+            job_id = excluded.job_id,
+            recruiter_id = excluded.recruiter_id,
+            candidate_draft_id = CASE
+                WHEN excluded.candidate_draft_id != '' THEN excluded.candidate_draft_id
+                ELSE candidate_outreach.candidate_draft_id
+            END,
+            status = excluded.status,
+            error_text = excluded.error_text,
+            updated_at = CURRENT_TIMESTAMP
+        RETURNING id
+        """,
+        (request_id, candidate_id, job_id, recruiter_id, candidate_draft_id, status, error_text),
+    )
+    outreach_id = int(cur.fetchone()["id"])
+    conn.commit()
+    return outreach_id
+
+
+def mark_outreach_interested(conn: sqlite3.Connection, outreach_id: int, reply_text: str = "", source_reply_email_id: str = "") -> None:
+    conn.execute(
+        """
+        UPDATE candidate_outreach
+        SET interest_status = 'interested',
+            status = 'interested',
+            reply_text = ?,
+            source_reply_email_id = ?,
+            error_text = '',
+            updated_at = CURRENT_TIMESTAMP
+        WHERE id = ?
+        """,
+        (reply_text, source_reply_email_id, outreach_id),
+    )
+    conn.commit()
+
+
+def set_outreach_forward_draft(conn: sqlite3.Connection, outreach_id: int, draft_id: str, error_text: str = "") -> None:
+    status = "forward_drafted" if draft_id else "forward_failed"
+    conn.execute(
+        """
+        UPDATE candidate_outreach
+        SET forward_draft_id = ?,
+            status = ?,
+            error_text = ?,
+            updated_at = CURRENT_TIMESTAMP
+        WHERE id = ?
+        """,
+        (draft_id, status, error_text, outreach_id),
+    )
+    conn.commit()
+
+
+def upsert_followup(
+    conn: sqlite3.Connection,
+    outreach_id: int,
+    candidate_id: int | None,
+    job_id: int | None,
+    recruiter_id: int | None,
+    due_at: str,
+    message: str,
+) -> int:
+    cur = conn.execute(
+        """
+        INSERT INTO followups (outreach_id, candidate_id, job_id, recruiter_id, due_at, message)
+        VALUES (?, ?, ?, ?, ?, ?)
+        ON CONFLICT(outreach_id) DO UPDATE SET
+            candidate_id = excluded.candidate_id,
+            job_id = excluded.job_id,
+            recruiter_id = excluded.recruiter_id,
+            due_at = excluded.due_at,
+            message = excluded.message,
+            updated_at = CURRENT_TIMESTAMP
+        RETURNING id
+        """,
+        (outreach_id, candidate_id, job_id, recruiter_id, due_at, message),
+    )
+    followup_id = int(cur.fetchone()["id"])
+    conn.commit()
+    return followup_id
+
+
+def mark_followup_sent(conn: sqlite3.Connection, followup_id: int, sent_at: str) -> None:
+    conn.execute(
+        """
+        UPDATE followups
+        SET status = 'sent', sent_at = ?, error_text = '', updated_at = CURRENT_TIMESTAMP
+        WHERE id = ?
+        """,
+        (sent_at, followup_id),
+    )
+    conn.commit()
+
+
+def mark_followup_failed(conn: sqlite3.Connection, followup_id: int, error_text: str) -> None:
+    conn.execute(
+        """
+        UPDATE followups
+        SET status = 'failed', error_text = ?, updated_at = CURRENT_TIMESTAMP
+        WHERE id = ?
+        """,
+        (error_text, followup_id),
+    )
+    conn.commit()
 
 
 def fetch_all(conn: sqlite3.Connection, query: str, params: Iterable[Any] = ()) -> list[sqlite3.Row]:

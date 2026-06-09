@@ -51,6 +51,25 @@ def match_candidate(conn: sqlite3.Connection, candidate_id: int, limit: int = 3,
     return sorted(results, key=lambda item: (-item.score, item.job_id))[:limit]
 
 
+def match_job_candidates(conn: sqlite3.Connection, job_id: int, limit: int = 3, min_score: float = 1.0) -> list[tuple[sqlite3.Row, MatchResult]]:
+    job = conn.execute("SELECT * FROM jobs WHERE id = ? AND status = 'open'", (job_id,)).fetchone()
+    if not job:
+        raise ValueError(f"Open job not found: {job_id}")
+
+    rows = conn.execute("SELECT * FROM candidates ORDER BY updated_at DESC, id").fetchall()
+    results: list[tuple[sqlite3.Row, MatchResult]] = []
+    for candidate in rows:
+        passed, summary = hard_filter(candidate, job)
+        if not passed:
+            continue
+        score, reason = evidence_score(candidate, job)
+        if score < min_score:
+            continue
+        results.append((candidate, MatchResult(int(job["id"]), score, reason, summary)))
+
+    return sorted(results, key=lambda item: (-item[1].score, int(item[0]["id"])))[:limit]
+
+
 def fetch_open_jobs(conn: sqlite3.Connection, clients_only: bool) -> list[sqlite3.Row]:
     if clients_only:
         return conn.execute(

@@ -10,6 +10,14 @@ data/
 imports/
 artifacts/
 
+# Local business outputs and private candidate materials
+candysign_*.md
+candysign_filtered_attachments/
+candysign_shortlist_resumes/
+email_drafts/
+github_issue_drafts/
+xhs_note_images/
+
 # Local environments
 .venv/
 venv/

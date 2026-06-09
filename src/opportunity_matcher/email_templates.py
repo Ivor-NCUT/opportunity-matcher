@@ -77,3 +77,72 @@ def recruiter_body(candidate: sqlite3.Row, job: sqlite3.Row, reason: str) -> str
             "泛函",
         ]
     )
+
+
+def candidate_outreach_subject(job: sqlite3.Row) -> str:
+    return f"有一个可能适合你的机会：{job['company']} - {job['title']}"
+
+
+def candidate_outreach_body(candidate: sqlite3.Row, job: sqlite3.Row, reason: str) -> str:
+    return "\n".join(
+        [
+            f"{candidate['name']}你好，",
+            "",
+            f"我这边收到一个来自 {job['company']} 的招聘需求，觉得可能和你的背景匹配：",
+            "",
+            f"- 岗位：{job['title']}",
+            f"- 城市/工作形态：{job['city'] or '未填'} / {job['work_type'] or '未填'}",
+            f"- 匹配理由：{reason}",
+            "",
+            "如果你对这个机会感兴趣，直接回复这封邮件说一声。我确认后会通过我的邮箱把你的简历转发给招聘方。",
+            "",
+            "泛函",
+        ]
+    )
+
+
+def recruiter_forward_subject(candidate: sqlite3.Row, job: sqlite3.Row) -> str:
+    return f"内推候选人：{candidate['name']} - {job['title']}"
+
+
+def recruiter_forward_body(candidate: sqlite3.Row, job: sqlite3.Row, reason: str) -> str:
+    lines = [
+        "你好，",
+        "",
+        f"这位候选人对 {job['company']} 的 {job['title']} 感兴趣，我通过 {ENTRY_EMAIL} 推荐给你们：",
+        "",
+        f"- 姓名：{candidate['name']}",
+        f"- 邮箱：{candidate['email']}",
+        f"- 城市：{candidate['city'] or '未填'}",
+        f"- 经验等级：{candidate['level'] or '未填'}",
+        f"- 工作形态：{candidate['work_type'] or '未填'}",
+        f"- 到岗时间：{candidate['availability'] or '未填'}",
+        f"- 匹配理由：{reason}",
+        f"- 简历位置：{candidate['resume_uri'] or '见转发邮件或候选人库'}",
+    ]
+    if candidate["referrer_name"]:
+        lines.append(f"- 推荐来源：{candidate['referrer_name']}")
+    lines.extend(
+        [
+            "",
+            f"如果后续录用，这位候选人可以算作我通过 {ENTRY_EMAIL} 内推，方便后续内推费结算。",
+            "",
+            "泛函",
+        ]
+    )
+    return "\n".join(lines)
+
+
+def followup_message(candidate: sqlite3.Row, job: sqlite3.Row, recruiter: sqlite3.Row | None) -> str:
+    recruiter_email = recruiter["email"] if recruiter else "未填"
+    referrer = candidate["referrer_name"] or "无"
+    return "\n".join(
+        [
+            "招聘跟进提醒",
+            f"候选人：{candidate['name']} ({candidate['email']})",
+            f"公司/岗位：{job['company']} - {job['title']}",
+            f"招聘方邮箱：{recruiter_email}",
+            f"推荐人：{referrer}",
+            "动作：询问候选人面试进展；如果已入职，提醒招聘方结算内推费；如果有推荐人，提醒给推荐人发微信红包。",
+        ]
+    )

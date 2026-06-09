@@ -2,7 +2,7 @@
 
 本地版 AI 招聘机会匹配工作台。它是一个无前端 CLI 程序，用产品自有 SQLite 数据库保存候选人、客户、公司、岗位、招聘方白名单、匹配结果、发送草稿、审计日志和外部来源记录。
 
-V1 只保留 `fanhan@aimanziyi.vip` 作为简历投递入口。当前本地版本不会真实发送邮件，只会生成 outbox 草稿和审计记录，方便回放、检查和后续接入真实邮箱发送能力。
+V1 只保留 `fanhan@aimanziyi.vip` 作为简历和招聘合作入口。当前本地版本不会真实发送邮件；常规候选人匹配流程生成 outbox 草稿和审计记录，招聘方合作流程会创建飞书邮箱草稿，方便人工检查后发送。
 
 ## 快速开始
 
@@ -17,7 +17,19 @@ PYTHONPATH=src python3 -m opportunity_matcher.cli run
 PYTHONPATH=src python3 -m opportunity_matcher.cli outbox
 ```
 
+招聘方合作流程：
+
+```bash
+PYTHONPATH=src python3 -m opportunity_matcher.cli sync-recruiting-mails
+PYTHONPATH=src python3 -m opportunity_matcher.cli draft-candidate-outreach --request-id 1
+PYTHONPATH=src python3 -m opportunity_matcher.cli review-interest
+PYTHONPATH=src python3 -m opportunity_matcher.cli mark-interested --outreach-id 1 --reply-text '候选人确认感兴趣'
+PYTHONPATH=src python3 -m opportunity_matcher.cli send-due-followups
+```
+
 默认数据库路径是 `data/opportunity_matcher.db`。也可以通过 `--db /path/to/app.db` 指定。
+
+完整命令、输入 JSON 字段、飞书快照格式和 outbox 边界见 [docs/CLI.md](docs/CLI.md)。
 
 ## 主要命令
 
@@ -30,6 +42,11 @@ PYTHONPATH=src python3 -m opportunity_matcher.cli outbox
 - `import-lark`：导入飞书 Base JSON 快照，将 `团队` 写入公司库、`职位` 写入职位库、`候选人` 写入候选人库。
 - `match --candidate-id <id>`：只查看某个候选人的匹配结果，不生成 outbox。
 - `run`：处理所有待处理候选人，生成候选人回信草稿和白名单招聘方推送草稿。
+- `sync-recruiting-mails`：从飞书邮箱同步标题为 `招聘合作｜姓名｜公司` 的招聘需求。
+- `draft-candidate-outreach`：为招聘需求匹配候选人并创建飞书邮箱触达草稿。
+- `review-interest`：查看或记录候选人回复，进入人工兴趣判断队列。
+- `mark-interested`：确认候选人感兴趣，创建招聘方简历转发草稿并安排 4 天跟进。
+- `send-due-followups`：通过飞书群机器人发送到期跟进提醒。
 - `outbox`：查看待发送草稿。
 - `audit`：查看审计日志。
 - `doctor`：检查数据库、基础数据和配置是否可用。
@@ -41,6 +58,9 @@ PYTHONPATH=src python3 -m opportunity_matcher.cli outbox
 - 公司库：团队名、slug、官网、招聘页、地点、赛道、阶段、团队人数、创始人、社媒、公司简介、文化、技术栈、融资信息、来源记录。
 - 岗位库：公司、岗位、城市/远程、经验等级、工作形态、薪资、赛道、岗位描述、必需能力、加分能力、状态。
 - 招聘方白名单：联系人、邮箱、公司、是否白名单、可接收岗位范围。
+- 招聘合作请求：来源邮件、招聘方、公司、JD 原文、偏好原文、关联岗位和复核状态。
+- 候选人触达：招聘需求、候选人、飞书草稿 ID、兴趣状态、转发草稿 ID。
+- 跟进提醒：候选人感兴趣后 4 天到期的面试进展和内推费结算提醒。
 - 审计日志：来源邮件、候选人、岗位、招聘方、事件、解释、创建时间。
 - 外部来源记录：记录飞书 Base 表名、record id、本地表和本地 id，方便追溯和重复导入。
 
