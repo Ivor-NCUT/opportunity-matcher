@@ -77,6 +77,22 @@ def init_db(conn: sqlite3.Connection) -> None:
             UNIQUE(name)
         );
 
+        CREATE TABLE IF NOT EXISTS headhunters (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT NOT NULL,
+            contact_name TEXT NOT NULL DEFAULT '',
+            contact_email TEXT NOT NULL,
+            company_id INTEGER REFERENCES companies(id) ON DELETE SET NULL,
+            client_id INTEGER REFERENCES clients(id) ON DELETE SET NULL,
+            status TEXT NOT NULL DEFAULT 'active',
+            source TEXT NOT NULL DEFAULT '',
+            notes TEXT NOT NULL DEFAULT '',
+            raw_json TEXT NOT NULL DEFAULT '{}',
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE(contact_email)
+        );
+
         CREATE TABLE IF NOT EXISTS candidates (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             email TEXT NOT NULL,
@@ -269,6 +285,24 @@ def init_db(conn: sqlite3.Connection) -> None:
             updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
             UNIQUE(source_email_id, classification)
         );
+
+        CREATE TABLE IF NOT EXISTS candidate_forwards (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            candidate_id INTEGER NOT NULL REFERENCES candidates(id) ON DELETE CASCADE,
+            recipient_email TEXT NOT NULL,
+            recipient_name TEXT NOT NULL DEFAULT '',
+            headhunter_id INTEGER REFERENCES headhunters(id) ON DELETE SET NULL,
+            client_id INTEGER REFERENCES clients(id) ON DELETE SET NULL,
+            subject TEXT NOT NULL DEFAULT '',
+            body TEXT NOT NULL DEFAULT '',
+            attachment_paths_json TEXT NOT NULL DEFAULT '[]',
+            message_id TEXT NOT NULL DEFAULT '',
+            status TEXT NOT NULL DEFAULT 'pending',
+            error_text TEXT NOT NULL DEFAULT '',
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE(candidate_id, recipient_email)
+        );
         """
     )
     ensure_columns(conn)
@@ -288,6 +322,17 @@ def ensure_columns(conn: sqlite3.Connection) -> None:
             "referral_note": "TEXT NOT NULL DEFAULT ''",
             "source_record_id": "TEXT NOT NULL DEFAULT ''",
             "raw_json": "TEXT NOT NULL DEFAULT '{}'",
+        },
+        "headhunters": {
+            "contact_name": "TEXT NOT NULL DEFAULT ''",
+            "company_id": "INTEGER REFERENCES companies(id) ON DELETE SET NULL",
+            "client_id": "INTEGER REFERENCES clients(id) ON DELETE SET NULL",
+            "status": "TEXT NOT NULL DEFAULT 'active'",
+            "source": "TEXT NOT NULL DEFAULT ''",
+            "notes": "TEXT NOT NULL DEFAULT ''",
+            "raw_json": "TEXT NOT NULL DEFAULT '{}'",
+            "created_at": "TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP",
+            "updated_at": "TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP",
         },
         "jobs": {
             "company_id": "INTEGER REFERENCES companies(id) ON DELETE SET NULL",
@@ -331,6 +376,19 @@ def ensure_columns(conn: sqlite3.Connection) -> None:
             "processed_at": "TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP",
             "updated_at": "TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP",
         },
+        "candidate_forwards": {
+            "recipient_name": "TEXT NOT NULL DEFAULT ''",
+            "headhunter_id": "INTEGER REFERENCES headhunters(id) ON DELETE SET NULL",
+            "client_id": "INTEGER REFERENCES clients(id) ON DELETE SET NULL",
+            "subject": "TEXT NOT NULL DEFAULT ''",
+            "body": "TEXT NOT NULL DEFAULT ''",
+            "attachment_paths_json": "TEXT NOT NULL DEFAULT '[]'",
+            "message_id": "TEXT NOT NULL DEFAULT ''",
+            "status": "TEXT NOT NULL DEFAULT 'pending'",
+            "error_text": "TEXT NOT NULL DEFAULT ''",
+            "created_at": "TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP",
+            "updated_at": "TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP",
+        },
     }
     for table, columns in migrations.items():
         existing = {row["name"] for row in conn.execute(f"PRAGMA table_info({table})")}
@@ -349,16 +407,31 @@ def loads(value: str | None) -> Any:
     return json.loads(value)
 
 
+def find_existing_candidate(conn: sqlite3.Connection, email: str, name: str) -> sqlite3.Row | None:
+    email = email.strip().lower()
+    name = name.strip()
+    if email:
+        row = conn.execute(
+            "SELECT id FROM candidates WHERE email = ? ORDER BY id LIMIT 1",
+            (email,),
+        ).fetchone()
+        if row:
+            return row
+    if name:
+        return conn.execute(
+            "SELECT id FROM candidates WHERE name = ? ORDER BY id LIMIT 1",
+            (name,),
+        ).fetchone()
+    return None
+
+
 def upsert_candidate(conn: sqlite3.Connection, item: dict[str, Any]) -> int:
     subject = item.get("source_subject", "")
     is_update = "简历更新" in subject
     email = item["email"].strip().lower()
     name = item["name"].strip()
 
-    existing = conn.execute(
-        "SELECT id FROM candidates WHERE email = ? OR (? != '' AND name = ?) ORDER BY id LIMIT 1",
-        (email, name, name),
-    ).fetchone()
+    existing = find_existing_candidate(conn, email, name)
     status = "pending_update" if existing and is_update else item.get("status", "pending")
 
     fields = {
@@ -549,6 +622,56 @@ def upsert_client(conn: sqlite3.Connection, item: dict[str, Any]) -> int:
     client_id = int(cur.fetchone()["id"])
     conn.commit()
     return client_id
+
+
+def upsert_headhunter(conn: sqlite3.Connection, item: dict[str, Any]) -> int:
+    fields = {
+        "name": item["name"].strip(),
+        "contact_name": item.get("contact_name", ""),
+        "contact_email": item["contact_email"].strip().lower(),
+        "company_id": item.get("company_id"),
+        "client_id": item.get("client_id"),
+        "status": item.get("status", "active"),
+        "source": item.get("source", ""),
+        "notes": item.get("notes", ""),
+        "raw_json": json.dumps(item.get("raw", {}), ensure_ascii=False),
+    }
+    cur = conn.execute(
+        """
+        INSERT INTO headhunters (
+            name, contact_name, contact_email, company_id, client_id, status,
+            source, notes, raw_json
+        ) VALUES (
+            :name, :contact_name, :contact_email, :company_id, :client_id,
+            :status, :source, :notes, :raw_json
+        )
+        ON CONFLICT(contact_email) DO UPDATE SET
+            name = excluded.name,
+            contact_name = excluded.contact_name,
+            company_id = excluded.company_id,
+            client_id = excluded.client_id,
+            status = excluded.status,
+            source = excluded.source,
+            notes = excluded.notes,
+            raw_json = excluded.raw_json,
+            updated_at = CURRENT_TIMESTAMP
+        RETURNING id
+        """,
+        fields,
+    )
+    headhunter_id = int(cur.fetchone()["id"])
+    conn.commit()
+    return headhunter_id
+
+
+def active_headhunters(conn: sqlite3.Connection) -> list[sqlite3.Row]:
+    return conn.execute(
+        """
+        SELECT * FROM headhunters
+        WHERE status = 'active'
+        ORDER BY updated_at DESC, id
+        """
+    ).fetchall()
 
 
 def upsert_job(conn: sqlite3.Connection, item: dict[str, Any]) -> int:
@@ -896,6 +1019,63 @@ def log_event(
         """,
         (event, candidate_id, job_id, recruiter_id, source_email_id, explanation),
     )
+
+
+def candidate_forward_exists(conn: sqlite3.Connection, candidate_id: int, recipient_email: str) -> bool:
+    row = conn.execute(
+        """
+        SELECT id FROM candidate_forwards
+        WHERE candidate_id = ? AND recipient_email = ? AND status = 'sent'
+        ORDER BY id LIMIT 1
+        """,
+        (candidate_id, recipient_email.strip().lower()),
+    ).fetchone()
+    return row is not None
+
+
+def upsert_candidate_forward(conn: sqlite3.Connection, item: dict[str, Any]) -> int:
+    fields = {
+        "candidate_id": item["candidate_id"],
+        "recipient_email": item["recipient_email"].strip().lower(),
+        "recipient_name": item.get("recipient_name", ""),
+        "headhunter_id": item.get("headhunter_id"),
+        "client_id": item.get("client_id"),
+        "subject": item.get("subject", ""),
+        "body": item.get("body", ""),
+        "attachment_paths_json": json.dumps(item.get("attachment_paths", []), ensure_ascii=False),
+        "message_id": item.get("message_id", ""),
+        "status": item.get("status", "pending"),
+        "error_text": item.get("error_text", ""),
+    }
+    cur = conn.execute(
+        """
+        INSERT INTO candidate_forwards (
+            candidate_id, recipient_email, recipient_name, headhunter_id,
+            client_id, subject, body, attachment_paths_json, message_id,
+            status, error_text
+        ) VALUES (
+            :candidate_id, :recipient_email, :recipient_name, :headhunter_id,
+            :client_id, :subject, :body, :attachment_paths_json, :message_id,
+            :status, :error_text
+        )
+        ON CONFLICT(candidate_id, recipient_email) DO UPDATE SET
+            recipient_name = excluded.recipient_name,
+            headhunter_id = excluded.headhunter_id,
+            client_id = excluded.client_id,
+            subject = excluded.subject,
+            body = excluded.body,
+            attachment_paths_json = excluded.attachment_paths_json,
+            message_id = excluded.message_id,
+            status = excluded.status,
+            error_text = excluded.error_text,
+            updated_at = CURRENT_TIMESTAMP
+        RETURNING id
+        """,
+        fields,
+    )
+    forward_id = int(cur.fetchone()["id"])
+    conn.commit()
+    return forward_id
 
 
 def upsert_mail_ingestion_item(conn: sqlite3.Connection, item: dict[str, Any]) -> int:

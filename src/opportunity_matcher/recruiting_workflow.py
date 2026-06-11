@@ -38,6 +38,7 @@ from .db import (
     upsert_recruiting_request,
 )
 from .email_templates import candidate_outreach_body, candidate_outreach_subject, followup_message, recruiter_forward_body, recruiter_forward_subject
+from .mail_classifier import MailClassifier, build_mail_classifier
 from .matcher import match_job_candidates
 
 
@@ -68,8 +69,10 @@ def sync_recruiting_mails(
     query: str = RECRUITING_SUBJECT_PREFIX,
     max_messages: int = 100,
     mailbox: str = "me",
+    classifier: MailClassifier | None = None,
     runner: CommandRunner = run_command,
 ) -> dict[str, int]:
+    classifier = classifier or build_mail_classifier()
     triage = runner(
         [
             "lark-cli",
@@ -116,18 +119,33 @@ def sync_recruiting_mails(
         if not message_id:
             continue
         detail = details_by_id.get(message_id, summary)
-        status = import_recruiting_mail(conn, {**summary, **detail, "message_id": message_id})
+        status = import_recruiting_mail(conn, {**summary, **detail, "message_id": message_id}, classifier=classifier)
         counts["seen"] += 1
         counts[status] += 1
     return counts
 
 
-def import_recruiting_mail(conn: sqlite3.Connection, message: dict[str, Any]) -> str:
+def import_recruiting_mail(conn: sqlite3.Connection, message: dict[str, Any], classifier: MailClassifier | None = None) -> str:
     subject = text_value(first_present(message, "subject", "title"))
     message_id = text_value(first_present(message, "message_id", "id", "mail_id"))
     sender_email = extract_email(text_value(first_present(message, "from", "sender", "from_email", "sender_email")))
     parsed = parse_recruiting_subject(subject)
     body = text_value(first_present(message, "body", "text", "plain_text", "content", "body_text"))
+    classification = classifier(message) if classifier else None
+
+    if classification and classification.label != "recruiting":
+        upsert_recruiting_request(
+            conn,
+            {
+                "source_email_id": message_id,
+                "source_subject": subject,
+                "sender_email": sender_email,
+                "status": "needs_review",
+                "error_text": f"方舟模型未将该邮件判定为招聘合作：{classification.reason}",
+                "raw": message,
+            },
+        )
+        return "needs_review"
 
     if not parsed:
         upsert_recruiting_request(

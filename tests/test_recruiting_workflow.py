@@ -17,6 +17,7 @@ import unittest
 from datetime import datetime, timezone
 
 from opportunity_matcher.db import init_db, upsert_candidate
+from opportunity_matcher.mail_classifier import MailClassification
 from opportunity_matcher.recruiting_workflow import (
     draft_candidate_outreach,
     import_recruiting_mail,
@@ -35,6 +36,13 @@ class RecruitingWorkflowTest(unittest.TestCase):
 
     def tearDown(self) -> None:
         self.conn.close()
+
+    @staticmethod
+    def classifier(label: str = "recruiting", reason: str = "test"):
+        def _classify(message: dict) -> MailClassification:
+            return MailClassification(label=label, confidence="high", reason=reason, provider="test", model="fake")
+
+        return _classify
 
     def test_import_recruiting_mail_creates_request_client_recruiter_and_job(self) -> None:
         status = import_recruiting_mail(
@@ -83,11 +91,28 @@ class RecruitingWorkflowTest(unittest.TestCase):
                 return json.dumps([{"message_id": "mail-1", "subject": "招聘合作｜张三｜Openmart"}], ensure_ascii=False)
             return json.dumps([{"message_id": "mail-1", "from": "san@example.com", "body": "岗位：AI 客户运营\n需要 AI 运营。"}], ensure_ascii=False)
 
-        counts = sync_recruiting_mails(self.conn, runner=runner)
+        counts = sync_recruiting_mails(self.conn, runner=runner, classifier=self.classifier())
 
         self.assertEqual(counts, {"seen": 1, "parsed": 1, "needs_review": 0})
         self.assertIn("+triage", calls[0])
         self.assertIn("+messages", calls[1])
+
+    def test_sync_recruiting_mails_respects_classifier_review(self) -> None:
+        def runner(command: list[str]) -> str:
+            if "+triage" in command:
+                return json.dumps([{"message_id": "mail-1", "subject": "招聘合作｜张三｜Openmart"}], ensure_ascii=False)
+            return json.dumps([{"message_id": "mail-1", "from": "san@example.com", "body": "这里其实是在约面试，不是委托招聘。"}], ensure_ascii=False)
+
+        counts = sync_recruiting_mails(
+            self.conn,
+            runner=runner,
+            classifier=self.classifier(label="review", reason="内容像沟通邮件，不像正式招聘委托"),
+        )
+        request = self.conn.execute("SELECT status, error_text FROM recruiting_requests WHERE source_email_id = 'mail-1'").fetchone()
+
+        self.assertEqual(counts, {"seen": 1, "parsed": 0, "needs_review": 1})
+        self.assertEqual(request["status"], "needs_review")
+        self.assertIn("方舟模型未将该邮件判定为招聘合作", request["error_text"])
 
     def test_draft_outreach_then_mark_interested_creates_forward_and_followup(self) -> None:
         candidate_id = upsert_candidate(

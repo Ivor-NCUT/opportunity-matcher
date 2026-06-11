@@ -11,7 +11,7 @@ Run the project-owned mailbox ingestion command instead of re-implementing mailb
 
 Target database: local SQLite `data/opportunity_matcher.db`.
 
-Do not write to Feishu Base. Do not send, delete, move, or label emails.
+Do not write to Feishu Base. By default, do not send, delete, move, or label emails. The headhunter partnership auto-forward path is the only configured exception: use it only when the user has requested automatic forwarding to headhunter partners.
 
 ## Workflow
 
@@ -22,16 +22,24 @@ Do not write to Feishu Base. Do not send, delete, move, or label emails.
 PYTHONPATH=src python3 -m opportunity_matcher.cli --db data/opportunity_matcher.db doctor
 ```
 
-3. Run the daily ingestion command:
+3. Run the daily ingestion command. The project uses Volcengine Ark through the OpenAI-compatible API to distinguish candidate applications from recruiting/client emails. Ensure `ARK_API_KEY` is set before running:
 
 ```bash
+export ARK_API_KEY='...'
 PYTHONPATH=src python3 -m opportunity_matcher.cli --db data/opportunity_matcher.db sync-mail-inbox --json
 ```
 
-4. Summarize only the returned JSON fields:
+4. If the user has explicitly enabled headhunter partnership automatic forwarding, run the same command with headhunter flags:
+
+```bash
+PYTHONPATH=src python3 -m opportunity_matcher.cli --db data/opportunity_matcher.db sync-mail-inbox --json --forward-new-candidates-to-headhunters --confirm-headhunter-send
+```
+
+5. Summarize only the returned JSON fields:
    - recruiting seen / parsed / needs_review
    - candidate seen / created / updated / duplicates
    - attachments_downloaded
+   - headhunter_forward partners / sent / drafted / failed count, if present
    - attachment_errors and text_extraction_errors count
    - new_records
    - processed_pending_candidates
