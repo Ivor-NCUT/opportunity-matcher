@@ -330,6 +330,8 @@ PYTHONPATH=src python3 -m opportunity_matcher.cli sync-mail-inbox --json
 | `--mail-classifier-base-url` | `https://ark.cn-beijing.volces.com/api/v3` | 火山方舟 OpenAI-compatible API 地址 |
 | `--mail-classifier-timeout` | `60` | 模型请求超时秒数 |
 
+如果 `doctor` 或同步命令提示 `NoAvailableModel`，说明请求已到达火山方舟，但该推理接入点当前没有可用在线模型实例。到方舟控制台检查对应 `ep-*` 接入点是否在同一区域、是否启动/部署成功、是否绑定可用模型，以及配额或实例是否可用；如果重建了接入点，用 `OPPORTUNITY_MATCHER_MAIL_CLASSIFIER_MODEL` 或 `--mail-classifier-model` 指向新的接入点 ID。
+
 可选参数：
 
 | 参数 | 说明 |

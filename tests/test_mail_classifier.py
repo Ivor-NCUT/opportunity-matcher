@@ -2,7 +2,7 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from opportunity_matcher.mail_classifier import build_mail_classifier, inspect_mail_classifier
+from opportunity_matcher.mail_classifier import ark_actionable_error_message, build_mail_classifier, inspect_mail_classifier
 
 
 def completion(content: str):
@@ -35,6 +35,17 @@ class MailClassifierTest(unittest.TestCase):
 
         self.assertTrue(result["available"])
         self.assertEqual(result["provider"], "ark")
+
+    def test_no_available_model_error_is_actionable(self) -> None:
+        message = ark_actionable_error_message(
+            RuntimeError("Error code: 404 - {'error': {'code': 'NoAvailableModel'}}"),
+            model="ep-test",
+            base_url="https://ark.example/api/v3",
+        )
+
+        self.assertIn("no available model instance", message)
+        self.assertIn("ep-test", message)
+        self.assertIn("Ark console", message)
 
 
 if __name__ == "__main__":

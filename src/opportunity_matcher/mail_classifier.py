@@ -154,7 +154,31 @@ def ark_chat_completion(
     }
     if max_tokens is not None:
         kwargs["max_tokens"] = max_tokens
-    return client.chat.completions.create(**kwargs)
+    try:
+        return client.chat.completions.create(**kwargs)
+    except Exception as exc:
+        raise RuntimeError(ark_actionable_error_message(exc, model=model, base_url=base_url)) from exc
+
+
+def ark_actionable_error_message(exc: Exception, model: str, base_url: str) -> str:
+    raw = str(exc)
+    if "NoAvailableModel" in raw:
+        return (
+            "Volcengine Ark endpoint has no available model instance. "
+            f"Endpoint ID: {model}; base URL: {base_url.rstrip('/')}. "
+            "Open the Ark console, find this inference endpoint, and check that it is created in the same region, "
+            "started/deployed successfully, bound to an online model, and has available quota or instances. "
+            "If the endpoint was recreated, update OPPORTUNITY_MATCHER_MAIL_CLASSIFIER_MODEL to the new ep-* ID. "
+            f"Raw error: {raw}"
+        )
+    if "ModelNotFound" in raw or "model" in raw and "not found" in raw.lower():
+        return (
+            "Volcengine Ark model/endpoint was not found. "
+            f"Configured model endpoint ID: {model}; base URL: {base_url.rstrip('/')}. "
+            "Verify the endpoint ID and region in the Ark console. "
+            f"Raw error: {raw}"
+        )
+    return raw
 
 
 def completion_text(completion: Any) -> str:
