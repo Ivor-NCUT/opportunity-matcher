@@ -166,8 +166,11 @@ def ark_actionable_error_message(exc: Exception, model: str, base_url: str) -> s
         return (
             "Volcengine Ark endpoint has no available model instance. "
             f"Endpoint ID: {model}; base URL: {base_url.rstrip('/')}. "
-            "Open the Ark console, find this inference endpoint, and check that it is created in the same region, "
-            "started/deployed successfully, bound to an online model, and has available quota or instances. "
+            "Open the Ark console online inference page, find this inference endpoint, and check that it is in cn-beijing, "
+            "status is healthy, bound model is present, and quota or instances are available. "
+            "You can also call GetEndpoint on open.volcengineapi.com with Action=GetEndpoint, Version=2024-01-01, "
+            f"and Id={model} to inspect Status and ModelReference. "
+            "If the endpoint looks healthy but chat still returns NoAvailableModel, enable it again in the console or call StartEndpoint. "
             "If the endpoint was recreated, update OPPORTUNITY_MATCHER_MAIL_CLASSIFIER_MODEL to the new ep-* ID. "
             f"Raw error: {raw}"
         )

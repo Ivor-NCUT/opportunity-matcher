@@ -330,7 +330,9 @@ PYTHONPATH=src python3 -m opportunity_matcher.cli sync-mail-inbox --json
 | `--mail-classifier-base-url` | `https://ark.cn-beijing.volces.com/api/v3` | 火山方舟 OpenAI-compatible API 地址 |
 | `--mail-classifier-timeout` | `60` | 模型请求超时秒数 |
 
-如果 `doctor` 或同步命令提示 `NoAvailableModel`，说明请求已到达火山方舟，但该推理接入点当前没有可用在线模型实例。到方舟控制台检查对应 `ep-*` 接入点是否在同一区域、是否启动/部署成功、是否绑定可用模型，以及配额或实例是否可用；如果重建了接入点，用 `OPPORTUNITY_MATCHER_MAIL_CLASSIFIER_MODEL` 或 `--mail-classifier-model` 指向新的接入点 ID。
+如果 `doctor` 或同步命令提示 `NoAvailableModel`，说明请求已到达火山方舟，但该推理接入点当前没有可用在线模型实例。优先打开火山方舟控制台在线推理页面，切到北京区，在接入点列表中找到对应 `ep-*`，确认运行状态是健康、绑定模型存在，并在详情页概览中检查限流、实例和配额。
+
+也可以用火山 OpenAPI 查询接入点状态：接口地址 `open.volcengineapi.com`，参数 `Action=GetEndpoint`、`Version=2024-01-01`、`Id=<ep-id>`；返回里的 `Status` 和 `ModelReference` 可用于判断状态和绑定模型。如果接入点看起来健康但仍返回 `NoAvailableModel`，在控制台操作栏重新启用该接入点，或调用 `StartEndpoint`。如果重建了接入点，用 `OPPORTUNITY_MATCHER_MAIL_CLASSIFIER_MODEL` 或 `--mail-classifier-model` 指向新的接入点 ID。
 
 可选参数：
 

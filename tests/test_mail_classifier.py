@@ -46,6 +46,8 @@ class MailClassifierTest(unittest.TestCase):
         self.assertIn("no available model instance", message)
         self.assertIn("ep-test", message)
         self.assertIn("Ark console", message)
+        self.assertIn("GetEndpoint", message)
+        self.assertIn("StartEndpoint", message)
 
 
 if __name__ == "__main__":
