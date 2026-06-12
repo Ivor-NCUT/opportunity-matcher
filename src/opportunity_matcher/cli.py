@@ -21,8 +21,10 @@ import sqlite3
 from pathlib import Path
 from typing import Any
 
-from .db import DEFAULT_DB, connect, fetch_all, init_db, upsert_candidate, upsert_client, upsert_company, upsert_job, upsert_recruiter
+from .db import DEFAULT_DB, connect, fetch_all, init_db, upsert_candidate, upsert_client, upsert_company, upsert_headhunter, upsert_job, upsert_recruiter
+from .headhunter_partnership import DEFAULT_HEADHUNTER_BODY, forward_candidates_to_headhunters
 from .lark_importer import import_lark_dir
+from .mail_classifier import DEFAULT_BASE_URL, DEFAULT_MODEL, DEFAULT_TIMEOUT, build_mail_classifier, inspect_mail_classifier
 from .mail_ingestion import CANDIDATE_QUERIES, sync_mail_inbox
 from .matcher import match_candidate
 from .recruiting_workflow import WEBHOOK_ENV, draft_candidate_outreach, mark_interested_and_draft_forward, review_interest, send_due_followups, sync_recruiting_mails
@@ -68,6 +70,10 @@ def build_parser() -> argparse.ArgumentParser:
     command.add_argument("--file", required=True)
     command.set_defaults(func=cmd_import_recruiters)
 
+    command = subparsers.add_parser("import-headhunters", help="Import headhunter partners from JSON.")
+    command.add_argument("--file", required=True)
+    command.set_defaults(func=cmd_import_headhunters)
+
     command = subparsers.add_parser("import-lark", help="Import exported Lark Base JSON snapshots.")
     command.add_argument("--dir", required=True)
     command.set_defaults(func=cmd_import_lark)
@@ -84,6 +90,7 @@ def build_parser() -> argparse.ArgumentParser:
     command.add_argument("--query", default="招聘合作")
     command.add_argument("--max", type=int, default=100)
     command.add_argument("--mailbox", default="me")
+    add_mail_classifier_args(command)
     command.set_defaults(func=cmd_sync_recruiting_mails)
 
     command = subparsers.add_parser("sync-mail-inbox", help="Daily Lark Mail ingestion for recruiting clients, jobs, and candidates.")
@@ -94,8 +101,22 @@ def build_parser() -> argparse.ArgumentParser:
     command.add_argument("--no-download-attachments", action="store_true")
     command.add_argument("--no-extract-text", action="store_true")
     command.add_argument("--no-run", action="store_true", help="Do not process pending candidates after ingestion.")
+    command.add_argument("--forward-new-candidates-to-headhunters", action="store_true", help="Forward newly imported/updated candidate resumes to active headhunter partners.")
+    command.add_argument("--confirm-headhunter-send", action="store_true", help="Send headhunter forwards immediately. Without this flag, forwards are saved as drafts.")
     command.add_argument("--json", action="store_true")
+    add_mail_classifier_args(command)
     command.set_defaults(func=cmd_sync_mail_inbox)
+
+    command = subparsers.add_parser("forward-candidates-to-headhunters", help="Forward candidate resume attachments to active headhunter partners.")
+    command.add_argument("--exclude-candidate-id", type=int, action="append", default=[])
+    command.add_argument("--candidate-id", type=int, action="append", dest="candidate_ids")
+    command.add_argument("--recipient-email", default="", help="Override active headhunter partners and send to one email.")
+    command.add_argument("--recipient-name", default="")
+    command.add_argument("--body", default=DEFAULT_HEADHUNTER_BODY)
+    command.add_argument("--mailbox", default="me")
+    command.add_argument("--confirm-send", action="store_true", help="Send immediately. Without this flag, create drafts.")
+    command.add_argument("--json", action="store_true")
+    command.set_defaults(func=cmd_forward_candidates_to_headhunters)
 
     command = subparsers.add_parser("draft-candidate-outreach", help="Create Lark Mail drafts for candidates matched to one recruiting request.")
     command.add_argument("--request-id", type=int, required=True)
@@ -192,6 +213,14 @@ def cmd_import_recruiters(conn: sqlite3.Connection, args: argparse.Namespace) ->
     return 0
 
 
+def cmd_import_headhunters(conn: sqlite3.Connection, args: argparse.Namespace) -> int:
+    items = read_json_list(args.file)
+    ids = [upsert_headhunter(conn, item) for item in items]
+    print(f"已导入猎头合作伙伴：{len(ids)}")
+    print("猎头 ID：" + ", ".join(str(item) for item in ids))
+    return 0
+
+
 def cmd_match(conn: sqlite3.Connection, args: argparse.Namespace) -> int:
     results = match_candidate(conn, args.candidate_id)
     rows = []
@@ -223,7 +252,13 @@ def cmd_run(conn: sqlite3.Connection, args: argparse.Namespace) -> int:
 
 
 def cmd_sync_recruiting_mails(conn: sqlite3.Connection, args: argparse.Namespace) -> int:
-    counts = sync_recruiting_mails(conn, query=args.query, max_messages=args.max, mailbox=args.mailbox)
+    counts = sync_recruiting_mails(
+        conn,
+        query=args.query,
+        max_messages=args.max,
+        mailbox=args.mailbox,
+        classifier=resolve_mail_classifier(args),
+    )
     print(f"已扫描招聘合作邮件：{counts['seen']}")
     print(f"已解析入库：{counts['parsed']}")
     print(f"待人工复核：{counts['needs_review']}")
@@ -240,6 +275,9 @@ def cmd_sync_mail_inbox(conn: sqlite3.Connection, args: argparse.Namespace) -> i
         download_attachments=not args.no_download_attachments,
         extract_text=not args.no_extract_text,
         run_pending=not args.no_run,
+        classifier=resolve_mail_classifier(args),
+        forward_new_candidates_to_headhunters=args.forward_new_candidates_to_headhunters,
+        confirm_headhunter_send=args.confirm_headhunter_send,
     )
     if args.json:
         print(json.dumps(result, ensure_ascii=False, indent=2))
@@ -265,6 +303,37 @@ def cmd_sync_mail_inbox(conn: sqlite3.Connection, args: argparse.Namespace) -> i
         print(f"附件下载失败：{len(result['candidates']['attachment_errors'])}")
     if result["candidates"]["text_extraction_errors"]:
         print(f"附件抽文失败：{len(result['candidates']['text_extraction_errors'])}")
+    if result["candidates"]["headhunter_forward"]["seen"]:
+        print(
+            "猎头合作推送："
+            f"合作伙伴 {result['candidates']['headhunter_forward']['partners']}，"
+            f"已发送 {result['candidates']['headhunter_forward']['sent']}，"
+            f"草稿 {result['candidates']['headhunter_forward']['drafted']}，"
+            f"失败 {len(result['candidates']['headhunter_forward']['failed'])}"
+        )
+    return 0
+
+
+def cmd_forward_candidates_to_headhunters(conn: sqlite3.Connection, args: argparse.Namespace) -> int:
+    result = forward_candidates_to_headhunters(
+        conn,
+        exclude_candidate_ids=set(args.exclude_candidate_id or []),
+        candidate_ids=args.candidate_ids,
+        recipient_email=args.recipient_email,
+        recipient_name=args.recipient_name,
+        body=args.body,
+        mailbox=args.mailbox,
+        confirm_send=args.confirm_send,
+    )
+    if args.json:
+        print(json.dumps(result, ensure_ascii=False, indent=2))
+        return 0
+    print(f"候选人扫描：{result['seen']}")
+    print(f"猎头合作伙伴：{result['partners']}")
+    print(f"已发送：{result['sent']}")
+    print(f"已创建草稿：{result['drafted']}")
+    print(f"已跳过：{len(result['skipped'])}")
+    print(f"失败：{len(result['failed'])}")
     return 0
 
 
@@ -357,8 +426,10 @@ def cmd_doctor(conn: sqlite3.Connection, args: argparse.Namespace) -> int:
         "candidates": "候选人",
         "jobs": "岗位",
         "recruiters": "招聘方联系人",
+        "headhunters": "猎头合作伙伴",
         "matches": "匹配记录",
         "outbox": "outbox 草稿",
+        "candidate_forwards": "候选人外部推送记录",
         "audit_logs": "审计日志",
         "source_records": "外部来源记录",
         "recruiting_requests": "招聘合作请求",
@@ -371,19 +442,56 @@ def cmd_doctor(conn: sqlite3.Connection, args: argparse.Namespace) -> int:
         print(f"{label}: {count}")
     open_jobs = conn.execute("SELECT COUNT(*) AS count FROM jobs WHERE status = 'open'").fetchone()["count"]
     whitelisted = conn.execute("SELECT COUNT(*) AS count FROM recruiters WHERE whitelisted = 1").fetchone()["count"]
+    active_headhunter_count = conn.execute("SELECT COUNT(*) AS count FROM headhunters WHERE status = 'active'").fetchone()["count"]
     if open_jobs == 0:
         print("提醒：当前没有开放岗位。")
     if whitelisted == 0:
         print("提醒：当前没有招聘方白名单联系人。")
+    if active_headhunter_count == 0:
+        print("提醒：当前没有 active 猎头合作伙伴，新候选人不会自动抄送猎头。")
     if shutil.which("lark-cli"):
         print("lark-cli: 可用")
     else:
         print("提醒：当前找不到 lark-cli，招聘邮件同步和飞书邮箱草稿创建不可用。")
+    classifier = inspect_mail_classifier()
+    if classifier["enabled"] and classifier["available"]:
+        print(f"邮件分类模型: {classifier['provider']} {classifier['model']} @ {classifier['base_url']} 可用")
+    elif classifier["enabled"]:
+        print(f"提醒：邮件分类模型不可用：{classifier['provider']} {classifier['model']} @ {classifier['base_url']} ({classifier['reason']})")
+    else:
+        print("提醒：邮件分类模型已禁用，邮件分类将回退到规则判断。")
     if os.environ.get(WEBHOOK_ENV):
         print("飞书群机器人 webhook: 已配置")
     else:
         print(f"提醒：未配置 {WEBHOOK_ENV}，到期跟进提醒不会发送到飞书群。")
     return 0
+
+
+def add_mail_classifier_args(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--mail-classifier-model",
+        default=DEFAULT_MODEL,
+        help="Volcengine Ark endpoint model ID.",
+    )
+    parser.add_argument(
+        "--mail-classifier-base-url",
+        default=DEFAULT_BASE_URL,
+        help="Volcengine Ark OpenAI-compatible base URL.",
+    )
+    parser.add_argument(
+        "--mail-classifier-timeout",
+        default=DEFAULT_TIMEOUT,
+        type=float,
+        help="Mail classifier request timeout in seconds.",
+    )
+
+
+def resolve_mail_classifier(args: argparse.Namespace):
+    return build_mail_classifier(
+        model=args.mail_classifier_model,
+        base_url=args.mail_classifier_base_url,
+        timeout=args.mail_classifier_timeout,
+    )
 
 
 def read_json_list(path: str) -> list[dict[str, Any]]:

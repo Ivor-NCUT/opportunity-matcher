@@ -19,7 +19,8 @@ from pathlib import Path
 from unittest.mock import patch
 
 from opportunity_matcher.cli import main
-from opportunity_matcher.db import init_db
+from opportunity_matcher.db import init_db, upsert_candidate
+from opportunity_matcher.mail_classifier import MailClassification
 from opportunity_matcher.mail_ingestion import sync_mail_inbox
 
 
@@ -31,6 +32,16 @@ class MailIngestionTest(unittest.TestCase):
 
     def tearDown(self) -> None:
         self.conn.close()
+
+    @staticmethod
+    def classifier(label: str = "candidate", reason: str = "test") -> callable:
+        def _classify(message: dict) -> MailClassification:
+            subject = str(message.get("subject", ""))
+            if subject.startswith("招聘合作"):
+                return MailClassification(label="recruiting", confidence="high", reason="test recruiting", provider="test", model="fake")
+            return MailClassification(label=label, confidence="high", reason=reason, provider="test", model="fake")
+
+        return _classify
 
     def test_sync_mail_inbox_imports_candidate_with_attachment_text(self) -> None:
         calls = []
@@ -85,6 +96,7 @@ class MailIngestionTest(unittest.TestCase):
                 candidate_queries=["简历"],
                 attachment_dir=tmp,
                 run_pending=False,
+                classifier=self.classifier(),
                 runner=runner,
                 downloader=downloader,
             )
@@ -114,8 +126,8 @@ class MailIngestionTest(unittest.TestCase):
                 )
             return "{}"
 
-        first = sync_mail_inbox(self.conn, candidate_queries=["简历"], run_pending=False, runner=runner)
-        second = sync_mail_inbox(self.conn, candidate_queries=["简历"], run_pending=False, runner=runner)
+        first = sync_mail_inbox(self.conn, candidate_queries=["简历"], run_pending=False, classifier=self.classifier(), runner=runner)
+        second = sync_mail_inbox(self.conn, candidate_queries=["简历"], run_pending=False, classifier=self.classifier(), runner=runner)
         count = self.conn.execute("SELECT COUNT(*) AS count FROM candidates").fetchone()["count"]
 
         self.assertEqual(first["candidates"]["created"], 1)
@@ -132,13 +144,140 @@ class MailIngestionTest(unittest.TestCase):
                 return json.dumps([{"message_id": "mail-unknown", "subject": "简历投递", "from": "未知发件人", "body": "请看附件"}], ensure_ascii=False)
             return "{}"
 
-        result = sync_mail_inbox(self.conn, candidate_queries=["简历"], run_pending=False, runner=runner)
+        result = sync_mail_inbox(self.conn, candidate_queries=["简历"], run_pending=False, classifier=self.classifier(), runner=runner)
         row = self.conn.execute("SELECT status, error_text FROM mail_ingestion_items WHERE source_email_id = 'mail-unknown'").fetchone()
 
         self.assertEqual(result["candidates"]["created"], 0)
         self.assertEqual(len(result["candidates"]["needs_review"]), 1)
         self.assertEqual(row["status"], "needs_review")
         self.assertIn("邮箱", row["error_text"])
+
+    def test_sync_mail_inbox_skips_non_candidate_subjects_into_review(self) -> None:
+        def runner(command: list[str]) -> str:
+            if "+triage" in command and "招聘合作" in command:
+                return "[]"
+            if "+triage" in command:
+                return json.dumps(
+                    [{"message_id": "mail-ambiguous", "subject": "面试 YC 公司运营", "from": "founder@example.com"}],
+                    ensure_ascii=False,
+                )
+            if "+messages" in command:
+                return json.dumps(
+                    [
+                        {
+                            "message_id": "mail-ambiguous",
+                            "subject": "面试 YC 公司运营",
+                            "from": "founder@example.com",
+                            "body": "我这边想让你帮忙招一位 YC 公司运营，附上岗位说明。",
+                        }
+                    ],
+                    ensure_ascii=False,
+                )
+            return "{}"
+
+        result = sync_mail_inbox(
+            self.conn,
+            candidate_queries=["运营"],
+            run_pending=False,
+            classifier=self.classifier(label="review", reason="标题像面试安排，不像投递"),
+            runner=runner,
+        )
+        row = self.conn.execute("SELECT status, error_text FROM mail_ingestion_items WHERE source_email_id = 'mail-ambiguous'").fetchone()
+        count = self.conn.execute("SELECT COUNT(*) AS count FROM candidates").fetchone()["count"]
+
+        self.assertEqual(result["candidates"]["created"], 0)
+        self.assertEqual(len(result["candidates"]["needs_review"]), 1)
+        self.assertEqual(row["status"], "needs_review")
+        self.assertIn("无法确认是候选人投递邮件", row["error_text"])
+        self.assertEqual(count, 0)
+
+    def test_sync_mail_inbox_prefers_existing_email_over_same_name_match(self) -> None:
+        upsert_candidate(
+            self.conn,
+            {
+                "email": "same-name@example.com",
+                "name": "李四",
+                "source_email_id": "seed-name",
+                "source_subject": "旧简历",
+            },
+        )
+        upsert_candidate(
+            self.conn,
+            {
+                "email": "lisi@example.com",
+                "name": "李四同学",
+                "source_email_id": "seed-email",
+                "source_subject": "已存在邮箱",
+            },
+        )
+
+        def runner(command: list[str]) -> str:
+            if "+triage" in command and "招聘合作" in command:
+                return "[]"
+            if "+triage" in command:
+                return json.dumps(
+                    [{"message_id": "mail-candidate-2", "subject": "投递｜李四｜AI 运营", "from": {"name": "李四", "email": "lisi@example.com"}}],
+                    ensure_ascii=False,
+                )
+            if "+messages" in command:
+                return json.dumps(
+                    [
+                        {
+                            "message_id": "mail-candidate-2",
+                            "subject": "投递｜李四｜AI 运营",
+                            "from": {"name": "李四", "email": "lisi@example.com"},
+                            "body": "更新作品集，继续投递 AI 运营。",
+                        }
+                    ],
+                    ensure_ascii=False,
+                )
+            return "{}"
+
+        result = sync_mail_inbox(self.conn, candidate_queries=["简历"], run_pending=False, classifier=self.classifier(), runner=runner)
+        rows = self.conn.execute("SELECT email, name, source_email_id FROM candidates ORDER BY id").fetchall()
+
+        self.assertEqual(result["candidates"]["updated"], 1)
+        self.assertEqual(len(rows), 2)
+        self.assertEqual(rows[0]["email"], "same-name@example.com")
+        self.assertEqual(rows[1]["email"], "lisi@example.com")
+        self.assertEqual(rows[1]["name"], "李四")
+        self.assertEqual(rows[1]["source_email_id"], "mail-candidate-2")
+
+    def test_sync_mail_inbox_keeps_recruiting_classification_out_of_candidate_table(self) -> None:
+        def runner(command: list[str]) -> str:
+            if "+triage" in command and "招聘合作" in command:
+                return "[]"
+            if "+triage" in command:
+                return json.dumps(
+                    [{"message_id": "mail-client-like", "subject": "帮忙推荐候选人", "from": "hr@example.com"}],
+                    ensure_ascii=False,
+                )
+            if "+messages" in command:
+                return json.dumps(
+                    [
+                        {
+                            "message_id": "mail-client-like",
+                            "subject": "帮忙推荐候选人",
+                            "from": "hr@example.com",
+                            "body": "我们在招 AI 运营，想请你帮忙推荐候选人。",
+                        }
+                    ],
+                    ensure_ascii=False,
+                )
+            return "{}"
+
+        result = sync_mail_inbox(
+            self.conn,
+            candidate_queries=["候选人"],
+            run_pending=False,
+            classifier=self.classifier(label="recruiting", reason="正文是在招人"),
+            runner=runner,
+        )
+        count = self.conn.execute("SELECT COUNT(*) AS count FROM candidates").fetchone()["count"]
+
+        self.assertEqual(result["candidates"]["created"], 0)
+        self.assertEqual(len(result["candidates"]["needs_review"]), 1)
+        self.assertEqual(count, 0)
 
     def test_cli_sync_mail_inbox_prints_json_summary(self) -> None:
         payload = {
@@ -153,6 +292,7 @@ class MailIngestionTest(unittest.TestCase):
                 "attachments_downloaded": 0,
                 "attachment_errors": [],
                 "text_extraction_errors": [],
+                "headhunter_forward": {"seen": 0, "partners": 0, "sent": 0, "drafted": 0, "skipped": [], "failed": []},
             },
             "processed_pending_candidates": 0,
             "new_records": {"clients": 0, "jobs": 0, "recruiting_requests": 0, "candidates": 0},
@@ -163,6 +303,8 @@ class MailIngestionTest(unittest.TestCase):
         self.assertEqual(code, 0)
         mocked.assert_called_once()
         self.assertEqual(mocked.call_args.kwargs["candidate_queries"], ["简历"])
+        self.assertFalse(mocked.call_args.kwargs["forward_new_candidates_to_headhunters"])
+        self.assertFalse(mocked.call_args.kwargs["confirm_headhunter_send"])
 
 
 if __name__ == "__main__":

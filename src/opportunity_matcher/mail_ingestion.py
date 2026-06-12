@@ -25,8 +25,10 @@ from pathlib import Path
 from typing import Any
 from xml.etree import ElementTree
 
+from .headhunter_partnership import forward_candidates_to_headhunters
 from .db import log_event, upsert_candidate, upsert_mail_ingestion_item
 from .lark_importer import infer_skills
+from .mail_classifier import MailClassification, MailClassifier, build_mail_classifier
 from .recruiting_workflow import (
     CommandRunner,
     extract_email,
@@ -42,6 +44,16 @@ from .workflow import process_pending
 
 
 CANDIDATE_QUERIES = ["简历", "resume", "投递", "求职", "CV", "应聘", "候选人", "作品集"]
+CANDIDATE_SUBJECT_PATTERNS = [
+    r"简历",
+    r"resume",
+    r"\bcv\b",
+    r"投递",
+    r"求职",
+    r"应聘",
+    r"候选人",
+    r"作品集",
+]
 RECRUITING_QUERY = "招聘合作"
 Downloader = Callable[[str, Path], None]
 TextExtractor = Callable[[Path], str]
@@ -56,12 +68,23 @@ def sync_mail_inbox(
     download_attachments: bool = True,
     extract_text: bool = True,
     run_pending: bool = True,
+    classifier: MailClassifier | None = None,
     runner: CommandRunner = run_command,
     downloader: Downloader | None = None,
     text_extractor: TextExtractor | None = None,
+    forward_new_candidates_to_headhunters: bool = False,
+    confirm_headhunter_send: bool = False,
 ) -> dict[str, Any]:
     before = table_counts(conn)
-    recruiting = sync_recruiting_mails(conn, query=RECRUITING_QUERY, max_messages=max_messages, mailbox=mailbox, runner=runner)
+    classifier = classifier or build_mail_classifier()
+    recruiting = sync_recruiting_mails(
+        conn,
+        query=RECRUITING_QUERY,
+        max_messages=max_messages,
+        mailbox=mailbox,
+        runner=runner,
+        classifier=classifier,
+    )
     candidate_result = sync_candidate_mails(
         conn,
         mailbox=mailbox,
@@ -70,9 +93,12 @@ def sync_mail_inbox(
         attachment_dir=Path(attachment_dir),
         download_attachments=download_attachments,
         extract_text=extract_text,
+        classifier=classifier,
         runner=runner,
         downloader=downloader or download_url_to_file,
         text_extractor=text_extractor or extract_text_from_file,
+        forward_new_candidates_to_headhunters=forward_new_candidates_to_headhunters,
+        confirm_headhunter_send=confirm_headhunter_send,
     )
     processed = process_pending(conn) if run_pending else 0
     after = table_counts(conn)
@@ -97,9 +123,12 @@ def sync_candidate_mails(
     attachment_dir: Path,
     download_attachments: bool,
     extract_text: bool,
+    classifier: MailClassifier | None,
     runner: CommandRunner,
     downloader: Downloader,
     text_extractor: TextExtractor,
+    forward_new_candidates_to_headhunters: bool = False,
+    confirm_headhunter_send: bool = False,
 ) -> dict[str, Any]:
     summaries = collect_candidate_summaries(mailbox, max_messages, queries, runner)
     message_ids = [message_id_for(item) for item in summaries if message_id_for(item)]
@@ -114,6 +143,7 @@ def sync_candidate_mails(
         "attachments_downloaded": 0,
         "attachment_errors": [],
         "text_extraction_errors": [],
+        "headhunter_forward": {"seen": 0, "partners": 0, "sent": 0, "drafted": 0, "skipped": [], "failed": []},
     }
 
     for summary in summaries:
@@ -122,7 +152,7 @@ def sync_candidate_mails(
             continue
         message = {**summary, **details.get(message_id, {}), "message_id": message_id}
         subject = text_value(first_present(message, "subject", "title"))
-        if subject.startswith(RECRUITING_QUERY):
+        if is_recruiting_subject(subject):
             continue
         existing = conn.execute(
             "SELECT local_id FROM mail_ingestion_items WHERE source_email_id = ? AND classification = 'candidate' AND status IN ('imported', 'updated', 'duplicate')",
@@ -130,6 +160,17 @@ def sync_candidate_mails(
         ).fetchone()
         if existing:
             result["duplicates"] += 1
+            continue
+        classification = classify_message(message, classifier)
+        if classification.label == "recruiting":
+            reason = f"方舟模型判断为招聘方来信，未写入候选人库：{classification.reason}"
+            record_review(conn, message, reason)
+            result["needs_review"].append(review_item(message, reason))
+            continue
+        if classification.label != "candidate":
+            reason = f"方舟模型无法确认是候选人投递邮件：{classification.reason}"
+            record_review(conn, message, reason)
+            result["needs_review"].append(review_item(message, reason))
             continue
 
         candidate = candidate_from_mail(message)
@@ -181,8 +222,28 @@ def sync_candidate_mails(
         )
         log_event(conn, f"mail_candidate_{status}", candidate_id, None, None, message_id, subject)
         conn.commit()
+        if forward_new_candidates_to_headhunters:
+            result["headhunter_forward"] = merge_forward_result(
+                result["headhunter_forward"],
+                forward_candidates_to_headhunters(
+                    conn,
+                    candidate_ids=[candidate_id],
+                    mailbox=mailbox,
+                    confirm_send=confirm_headhunter_send,
+                    runner=runner,
+                ),
+            )
 
     return result
+
+
+def merge_forward_result(current: dict[str, Any], incoming: dict[str, Any]) -> dict[str, Any]:
+    merged = dict(current)
+    for key in ("seen", "partners", "sent", "drafted"):
+        merged[key] = int(merged.get(key, 0)) + int(incoming.get(key, 0))
+    for key in ("skipped", "failed"):
+        merged[key] = list(merged.get(key, [])) + list(incoming.get(key, []))
+    return merged
 
 
 def collect_candidate_summaries(mailbox: str, max_messages: int, queries: list[str], runner: CommandRunner) -> list[dict[str, Any]]:
@@ -239,6 +300,28 @@ def fetch_message_details(mailbox: str, message_ids: list[str], runner: CommandR
             if message_id:
                 by_id[message_id] = item
     return by_id
+
+
+def is_recruiting_subject(subject: str) -> bool:
+    return subject.strip().startswith(RECRUITING_QUERY)
+
+
+def looks_like_candidate_subject(subject: str) -> bool:
+    normalized = subject.strip()
+    if not normalized:
+        return False
+    return any(re.search(pattern, normalized, flags=re.IGNORECASE) for pattern in CANDIDATE_SUBJECT_PATTERNS)
+
+
+def classify_message(message: dict[str, Any], classifier: MailClassifier | None) -> MailClassification:
+    if classifier:
+        return classifier(message)
+    subject = text_value(first_present(message, "subject", "title"))
+    if is_recruiting_subject(subject):
+        return MailClassification("recruiting", "high", "标题以招聘合作开头", "rules", "subject-prefix")
+    if looks_like_candidate_subject(subject):
+        return MailClassification("candidate", "medium", "标题命中候选人投递关键词", "rules", "subject-keywords")
+    return MailClassification("review", "low", "标题无法稳定判断邮件类型", "rules", "subject-review")
 
 
 def candidate_from_mail(message: dict[str, Any]) -> dict[str, Any]:

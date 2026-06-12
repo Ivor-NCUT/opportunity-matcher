@@ -1,8 +1,8 @@
 # Opportunity Matcher CLI 使用说明
 
-`opportunity-matcher` 是本地机会匹配工作台的命令行入口。它用 SQLite 保存候选人、公司、客户、岗位、招聘方白名单、匹配结果、outbox 草稿、审计日志和飞书来源映射。
+`opportunity-matcher` 是本地机会匹配工作台的命令行入口。它用 SQLite 保存候选人、公司、客户、岗位、招聘方白名单、匹配结果、候选人外部推送记录、outbox 草稿、审计日志和飞书来源映射。
 
-当前版本不会真实发送邮件。候选人常规匹配流程仍写本地 outbox；招聘方合作流程会通过 `lark-cli` 创建飞书邮箱草稿，等待人工检查后发送。
+候选人常规匹配流程仍写本地 outbox；招聘方合作流程会通过 `lark-cli` 创建飞书邮箱草稿，等待人工检查后发送。只有 `forward-candidates-to-headhunters --confirm-send` 或 `sync-mail-inbox --forward-new-candidates-to-headhunters --confirm-headhunter-send` 会真实发送猎头合作简历邮件。
 
 ## 运行方式
 
@@ -57,6 +57,13 @@ PYTHONPATH=src python3 -m opportunity_matcher.cli draft-candidate-outreach --req
 PYTHONPATH=src python3 -m opportunity_matcher.cli review-interest
 PYTHONPATH=src python3 -m opportunity_matcher.cli mark-interested --outreach-id 1 --reply-text '候选人表示感兴趣'
 PYTHONPATH=src python3 -m opportunity_matcher.cli send-due-followups
+```
+
+猎头合作简历推送：
+
+```bash
+PYTHONPATH=src python3 -m opportunity_matcher.cli forward-candidates-to-headhunters --confirm-send
+PYTHONPATH=src python3 -m opportunity_matcher.cli sync-mail-inbox --forward-new-candidates-to-headhunters --confirm-headhunter-send
 ```
 
 ## 命令总览
@@ -198,6 +205,27 @@ PYTHONPATH=src python3 -m opportunity_matcher.cli import-recruiters --file examp
 | `whitelisted` | 否 | 是否允许生成招聘方推送草稿 |
 | `job_ids` | 否 | 可接收的岗位 ID 数组；空数组表示接收本公司所有匹配岗位 |
 
+### `import-headhunters --file <json>`
+
+导入猎头合作伙伴 JSON 列表。猎头按 `contact_email` 去重。所有 `status = active` 的猎头都会接收后续自动抄送的候选人简历。
+
+```bash
+PYTHONPATH=src python3 -m opportunity_matcher.cli import-headhunters --file headhunters.json
+```
+
+常用字段：
+
+| 字段 | 必填 | 说明 |
+| --- | --- | --- |
+| `name` | 是 | 猎头合作伙伴或机构名称，例如 `TTC` |
+| `contact_name` | 否 | 联系人姓名 |
+| `contact_email` | 是 | 接收候选人简历的邮箱 |
+| `client_id` | 否 | 关联客户 ID |
+| `company_id` | 否 | 关联公司 ID |
+| `status` | 否 | 默认 `active`；非 active 不参与自动推送 |
+| `source` | 否 | 来源 |
+| `notes` | 否 | 备注 |
+
 ### `import-lark --dir <directory>`
 
 导入飞书 Base JSON 快照目录。这个命令只读本地 JSON 文件，不直接访问飞书 API。
@@ -252,9 +280,10 @@ PYTHONPATH=src python3 -m opportunity_matcher.cli run
 
 ### `sync-recruiting-mails [--query <text>] [--max <n>] [--mailbox <mailbox>]`
 
-从飞书邮箱同步招聘合作邮件。默认搜索标题/正文里的 `招聘合作`，读取邮件正文后导入为招聘客户、招聘方联系人、岗位和招聘合作请求。
+从飞书邮箱同步招聘合作邮件。默认搜索标题/正文里的 `招聘合作`，并先调用火山方舟判断这是不是“公司/招聘方想让我帮忙招人”的邮件；只有模型判定为招聘合作后，才继续读取正文并导入招聘客户、招聘方联系人、岗位和招聘合作请求。
 
 ```bash
+export ARK_API_KEY='...'
 PYTHONPATH=src python3 -m opportunity_matcher.cli sync-recruiting-mails
 ```
 
@@ -267,15 +296,17 @@ PYTHONPATH=src python3 -m opportunity_matcher.cli sync-recruiting-mails
 处理规则：
 
 - 标题合规且正文非空：写入 `clients`、`recruiters`、`jobs`、`recruiting_requests`。
-- 标题不合规或正文为空：写入 `recruiting_requests`，状态为 `needs_review`。
+- 模型未判定为招聘合作、标题不合规或正文为空：写入 `recruiting_requests`，状态为 `needs_review`。
 - 同一 `source_email_id` 重复同步会更新旧记录，不重复创建请求。
 - 命令依赖本机 `lark-cli` 邮箱授权。
+- 命令依赖环境变量 `OPPORTUNITY_MATCHER_ARK_API_KEY` 或 `ARK_API_KEY`，优先读取项目专用的 `OPPORTUNITY_MATCHER_ARK_API_KEY`。默认模型配置来自 `--mail-classifier-*` 参数或环境变量 `OPPORTUNITY_MATCHER_MAIL_CLASSIFIER_*`；当前默认值是 `https://ark.cn-beijing.volces.com/api/v3` + `ep-20260611005702-gw2qc`。
 
 ### `sync-mail-inbox [--mailbox <mailbox>] [--max <n>] [--candidate-query <text>] [--attachment-dir <dir>] [--json]`
 
-每日飞书邮箱入库入口。它只读邮箱，不发送、不删除、不移动邮件；目标库是本地 SQLite。
+每日飞书邮箱入库入口。默认只读邮箱，不发送、不删除、不移动邮件；目标库是本地 SQLite。候选人/招聘方分流使用火山方舟模型。
 
 ```bash
+export OPPORTUNITY_MATCHER_ARK_API_KEY='...'
 PYTHONPATH=src python3 -m opportunity_matcher.cli sync-mail-inbox
 PYTHONPATH=src python3 -m opportunity_matcher.cli sync-mail-inbox --json
 ```
@@ -284,10 +315,26 @@ PYTHONPATH=src python3 -m opportunity_matcher.cli sync-mail-inbox --json
 
 - 先复用 `sync-recruiting-mails` 搜索 `招聘合作`，导入客户、招聘方、职位和招聘请求。
 - 再用候选人关键词搜索邮箱，默认关键词是 `简历`、`resume`、`投递`、`求职`、`CV`、`应聘`、`候选人`、`作品集`。
+- 候选人侧会先调火山方舟模型判断是不是候选人投递；只有模型判定为 `candidate` 的邮件，才会自动写入候选人库。
 - 候选人按来源邮件、邮箱、姓名和附件记录去重；同一邮件不会重复下载和重复入库。
 - 默认下载候选人附件到 `data/mail_attachments/<message_id>/`，并尽量抽取全文写入候选人的 `resume_text`。
-- 无法识别候选人邮箱或姓名的邮件写入 `mail_ingestion_items`，状态为 `needs_review`。
+- 方舟模型判断为招聘方来信、无法确认邮件类型，或无法识别候选人邮箱 / 姓名的邮件，会写入 `mail_ingestion_items`，状态为 `needs_review`，避免误入候选人库。
 - 执行末尾默认调用 `run`，处理新入库的 `pending` / `pending_update` 候选人，只生成本地 outbox 草稿。
+- 如果加 `--forward-new-candidates-to-headhunters`，新入库或更新的候选人会进入猎头合作推送流程；未加 `--confirm-headhunter-send` 时只创建飞书邮箱草稿，加了才真实发送给 active 猎头合作伙伴。
+
+通用模型参数：
+
+| 参数 | 默认值 | 说明 |
+| --- | --- | --- |
+| `--mail-classifier-model` | `ep-20260611005702-gw2qc` | 火山方舟推理接入点 ID |
+| `--mail-classifier-base-url` | `https://ark.cn-beijing.volces.com/api/v3` | 火山方舟 OpenAI-compatible API 地址 |
+| `--mail-classifier-timeout` | `60` | 模型请求超时秒数 |
+
+建议把该项目使用的方舟 key 配到 `OPPORTUNITY_MATCHER_ARK_API_KEY`，避免和机器上其它方舟项目共用的 `ARK_API_KEY` 混淆。
+
+如果 `doctor` 或同步命令提示 `NoAvailableModel`，说明请求已到达火山方舟，但该推理接入点当前没有可用在线模型实例。优先打开火山方舟控制台在线推理页面，切到北京区，在接入点列表中找到对应 `ep-*`，确认运行状态是健康、绑定模型存在，并在详情页概览中检查限流、实例和配额。
+
+也可以用火山 OpenAPI 查询接入点状态：接口地址 `open.volcengineapi.com`，参数 `Action=GetEndpoint`、`Version=2024-01-01`、`Id=<ep-id>`；返回里的 `Status` 和 `ModelReference` 可用于判断状态和绑定模型。如果接入点看起来健康但仍返回 `NoAvailableModel`，在控制台操作栏重新启用该接入点，或调用 `StartEndpoint`。如果重建了接入点，用 `OPPORTUNITY_MATCHER_MAIL_CLASSIFIER_MODEL` 或 `--mail-classifier-model` 指向新的接入点 ID。
 
 可选参数：
 
@@ -297,7 +344,36 @@ PYTHONPATH=src python3 -m opportunity_matcher.cli sync-mail-inbox --json
 | `--no-download-attachments` | 只入库附件元数据，不下载文件。 |
 | `--no-extract-text` | 下载附件但不抽取全文。 |
 | `--no-run` | 入库后不处理 pending 候选人。 |
+| `--forward-new-candidates-to-headhunters` | 将新入库或更新的候选人简历推送给 active 猎头合作伙伴。 |
+| `--confirm-headhunter-send` | 配合猎头合作推送开关使用，真实发送邮件；不加则只创建草稿。 |
 | `--json` | 输出定时任务可消费的机器可读摘要。 |
+
+### `forward-candidates-to-headhunters [--confirm-send]`
+
+把候选人简历附件推送给所有 active 猎头合作伙伴。命令会读取候选人的 `resume_uri`，只附加当前项目目录下真实存在的本地文件，并用 `candidate_forwards` 表记录“候选人 + 猎头邮箱”是否已发送，避免重复发送。
+
+```bash
+PYTHONPATH=src python3 -m opportunity_matcher.cli forward-candidates-to-headhunters --confirm-send
+PYTHONPATH=src python3 -m opportunity_matcher.cli forward-candidates-to-headhunters --exclude-candidate-id 31 --exclude-candidate-id 19 --confirm-send
+```
+
+默认正文：
+
+```text
+你好，我是泛函，擅长用流量手段获得优质候选人线索，这是我手里不错的候选人，请查收
+```
+
+可选参数：
+
+| 参数 | 说明 |
+| --- | --- |
+| `--candidate-id <id>` | 只推送指定候选人，可重复传入。 |
+| `--exclude-candidate-id <id>` | 排除指定候选人，可重复传入。 |
+| `--recipient-email <email>` | 跳过猎头库，只发送给指定邮箱。 |
+| `--recipient-name <name>` | 配合指定邮箱使用，覆盖收件人名称。 |
+| `--body <text>` | 覆盖默认正文。 |
+| `--confirm-send` | 真实发送；不加时只创建草稿。 |
+| `--json` | 输出机器可读摘要。 |
 
 ### `draft-candidate-outreach --request-id <id> [--limit <n>] [--mailbox <mailbox>]`
 
@@ -390,6 +466,7 @@ PYTHONPATH=src python3 -m opportunity_matcher.cli doctor
 `doctor` 还会检查：
 
 - `lark-cli` 是否可用。
+- 火山方舟邮件分类模型是否可用，包括 `OPPORTUNITY_MATCHER_ARK_API_KEY` / `ARK_API_KEY`、OpenAI SDK 和方舟接口连通性。
 - 是否配置 `OPPORTUNITY_MATCHER_FEISHU_BOT_WEBHOOK`。
 
 ## 状态和输出边界
