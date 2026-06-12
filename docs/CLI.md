@@ -299,14 +299,14 @@ PYTHONPATH=src python3 -m opportunity_matcher.cli sync-recruiting-mails
 - 模型未判定为招聘合作、标题不合规或正文为空：写入 `recruiting_requests`，状态为 `needs_review`。
 - 同一 `source_email_id` 重复同步会更新旧记录，不重复创建请求。
 - 命令依赖本机 `lark-cli` 邮箱授权。
-- 命令依赖环境变量 `ARK_API_KEY`。默认模型配置来自 `--mail-classifier-*` 参数或环境变量 `OPPORTUNITY_MATCHER_MAIL_CLASSIFIER_*`；当前默认值是 `https://ark.cn-beijing.volces.com/api/v3` + `ep-20260611005702-gw2qc`。
+- 命令依赖环境变量 `OPPORTUNITY_MATCHER_ARK_API_KEY` 或 `ARK_API_KEY`，优先读取项目专用的 `OPPORTUNITY_MATCHER_ARK_API_KEY`。默认模型配置来自 `--mail-classifier-*` 参数或环境变量 `OPPORTUNITY_MATCHER_MAIL_CLASSIFIER_*`；当前默认值是 `https://ark.cn-beijing.volces.com/api/v3` + `ep-20260611005702-gw2qc`。
 
 ### `sync-mail-inbox [--mailbox <mailbox>] [--max <n>] [--candidate-query <text>] [--attachment-dir <dir>] [--json]`
 
 每日飞书邮箱入库入口。默认只读邮箱，不发送、不删除、不移动邮件；目标库是本地 SQLite。候选人/招聘方分流使用火山方舟模型。
 
 ```bash
-export ARK_API_KEY='...'
+export OPPORTUNITY_MATCHER_ARK_API_KEY='...'
 PYTHONPATH=src python3 -m opportunity_matcher.cli sync-mail-inbox
 PYTHONPATH=src python3 -m opportunity_matcher.cli sync-mail-inbox --json
 ```
@@ -329,6 +329,8 @@ PYTHONPATH=src python3 -m opportunity_matcher.cli sync-mail-inbox --json
 | `--mail-classifier-model` | `ep-20260611005702-gw2qc` | 火山方舟推理接入点 ID |
 | `--mail-classifier-base-url` | `https://ark.cn-beijing.volces.com/api/v3` | 火山方舟 OpenAI-compatible API 地址 |
 | `--mail-classifier-timeout` | `60` | 模型请求超时秒数 |
+
+建议把该项目使用的方舟 key 配到 `OPPORTUNITY_MATCHER_ARK_API_KEY`，避免和机器上其它方舟项目共用的 `ARK_API_KEY` 混淆。
 
 如果 `doctor` 或同步命令提示 `NoAvailableModel`，说明请求已到达火山方舟，但该推理接入点当前没有可用在线模型实例。优先打开火山方舟控制台在线推理页面，切到北京区，在接入点列表中找到对应 `ep-*`，确认运行状态是健康、绑定模型存在，并在详情页概览中检查限流、实例和配额。
 
@@ -464,7 +466,7 @@ PYTHONPATH=src python3 -m opportunity_matcher.cli doctor
 `doctor` 还会检查：
 
 - `lark-cli` 是否可用。
-- 火山方舟邮件分类模型是否可用，包括 `ARK_API_KEY`、OpenAI SDK 和方舟接口连通性。
+- 火山方舟邮件分类模型是否可用，包括 `OPPORTUNITY_MATCHER_ARK_API_KEY` / `ARK_API_KEY`、OpenAI SDK 和方舟接口连通性。
 - 是否配置 `OPPORTUNITY_MATCHER_FEISHU_BOT_WEBHOOK`。
 
 ## 状态和输出边界

@@ -2,7 +2,7 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from opportunity_matcher.mail_classifier import ark_actionable_error_message, build_mail_classifier, inspect_mail_classifier
+from opportunity_matcher.mail_classifier import ark_actionable_error_message, ark_api_key, build_mail_classifier, inspect_mail_classifier
 
 
 def completion(content: str):
@@ -35,6 +35,10 @@ class MailClassifierTest(unittest.TestCase):
 
         self.assertTrue(result["available"])
         self.assertEqual(result["provider"], "ark")
+
+    def test_project_ark_api_key_takes_precedence(self) -> None:
+        with patch.dict("os.environ", {"ARK_API_KEY": "global-key", "OPPORTUNITY_MATCHER_ARK_API_KEY": "project-key"}, clear=True):
+            self.assertEqual(ark_api_key(), "project-key")
 
     def test_no_available_model_error_is_actionable(self) -> None:
         message = ark_actionable_error_message(

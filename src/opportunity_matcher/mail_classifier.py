@@ -10,7 +10,7 @@ PROVIDER = "ark"
 DEFAULT_BASE_URL = os.environ.get("OPPORTUNITY_MATCHER_MAIL_CLASSIFIER_BASE_URL", "https://ark.cn-beijing.volces.com/api/v3")
 DEFAULT_MODEL = os.environ.get("OPPORTUNITY_MATCHER_MAIL_CLASSIFIER_MODEL", "ep-20260611005702-gw2qc")
 DEFAULT_TIMEOUT = float(os.environ.get("OPPORTUNITY_MATCHER_MAIL_CLASSIFIER_TIMEOUT", "60"))
-DEFAULT_ARK_API_KEY_ENV = "ARK_API_KEY"
+ARK_API_KEY_ENVS = ("OPPORTUNITY_MATCHER_ARK_API_KEY", "ARK_API_KEY")
 ALLOWED_LABELS = {"candidate", "recruiting", "review"}
 
 
@@ -45,7 +45,7 @@ def inspect_mail_classifier(
         "model": model,
         "base_url": base_url,
         "enabled": True,
-        "api_key_env": DEFAULT_ARK_API_KEY_ENV,
+        "api_key_env": " or ".join(ARK_API_KEY_ENVS),
     }
     try:
         ark_healthcheck(model=model, base_url=base_url, timeout=timeout)
@@ -139,9 +139,9 @@ def ark_chat_completion(
     messages: list[dict[str, str]],
     max_tokens: int | None = None,
 ) -> Any:
-    api_key = os.environ.get(DEFAULT_ARK_API_KEY_ENV)
+    api_key = ark_api_key()
     if not api_key:
-        raise RuntimeError(f"{DEFAULT_ARK_API_KEY_ENV} is not set")
+        raise RuntimeError(f"{' or '.join(ARK_API_KEY_ENVS)} is not set")
     try:
         from openai import OpenAI
     except ImportError as exc:
@@ -160,6 +160,14 @@ def ark_chat_completion(
         raise RuntimeError(ark_actionable_error_message(exc, model=model, base_url=base_url)) from exc
 
 
+def ark_api_key() -> str:
+    for env_name in ARK_API_KEY_ENVS:
+        value = os.environ.get(env_name)
+        if value:
+            return value
+    return ""
+
+
 def ark_actionable_error_message(exc: Exception, model: str, base_url: str) -> str:
     raw = str(exc)
     if "NoAvailableModel" in raw:
@@ -168,6 +176,8 @@ def ark_actionable_error_message(exc: Exception, model: str, base_url: str) -> s
             f"Endpoint ID: {model}; base URL: {base_url.rstrip('/')}. "
             "Open the Ark console online inference page, find this inference endpoint, and check that it is in cn-beijing, "
             "status is healthy, bound model is present, and quota or instances are available. "
+            "Copy the API key from this endpoint's API access page and set OPPORTUNITY_MATCHER_ARK_API_KEY; "
+            "also confirm that the key belongs to the endpoint's project. "
             "You can also call GetEndpoint on open.volcengineapi.com with Action=GetEndpoint, Version=2024-01-01, "
             f"and Id={model} to inspect Status and ModelReference. "
             "If the endpoint looks healthy but chat still returns NoAvailableModel, enable it again in the console or call StartEndpoint. "

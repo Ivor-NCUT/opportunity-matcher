@@ -31,7 +31,7 @@ PYTHONPATH=src python3 -m opportunity_matcher.cli send-due-followups
 猎头合作推送：
 
 ```bash
-export ARK_API_KEY='...'
+export OPPORTUNITY_MATCHER_ARK_API_KEY='...'
 PYTHONPATH=src python3 -m opportunity_matcher.cli forward-candidates-to-headhunters --confirm-send
 PYTHONPATH=src python3 -m opportunity_matcher.cli sync-mail-inbox --forward-new-candidates-to-headhunters --confirm-headhunter-send
 ```

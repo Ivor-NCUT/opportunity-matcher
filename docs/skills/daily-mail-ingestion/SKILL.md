@@ -22,10 +22,10 @@ Do not write to Feishu Base. By default, do not send, delete, move, or label ema
 PYTHONPATH=src python3 -m opportunity_matcher.cli --db data/opportunity_matcher.db doctor
 ```
 
-3. Run the daily ingestion command. The project uses Volcengine Ark through the OpenAI-compatible API to distinguish candidate applications from recruiting/client emails. Ensure `ARK_API_KEY` is set before running:
+3. Run the daily ingestion command. The project uses Volcengine Ark through the OpenAI-compatible API to distinguish candidate applications from recruiting/client emails. Ensure `OPPORTUNITY_MATCHER_ARK_API_KEY` or `ARK_API_KEY` is set before running:
 
 ```bash
-export ARK_API_KEY='...'
+export OPPORTUNITY_MATCHER_ARK_API_KEY='...'
 PYTHONPATH=src python3 -m opportunity_matcher.cli --db data/opportunity_matcher.db sync-mail-inbox --json
 ```
 
